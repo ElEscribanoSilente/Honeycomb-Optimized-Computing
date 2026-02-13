@@ -1,0 +1,7 @@
+# HOC - Dependencias de desarrollo, tests y benchmarks
+
+-r requirements.txt
+
+pytest>=7.0
+pytest-benchmark>=4.0
+pytest-cov>=4.0

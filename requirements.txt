@@ -1,0 +1,4 @@
+# HOC - Honeycomb Optimized Computing
+# Dependencias de producción
+
+numpy>=1.21.0

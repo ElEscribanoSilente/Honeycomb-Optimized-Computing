@@ -76,10 +76,23 @@ B6 (TOCTOU load) diferido como no bloqueante.
 
 ---
 
-## FASE 2 — Seguridad & Hardening
+## FASE 2 — Seguridad & Hardening ✅ CERRADA (2026-04-23)
 **Objetivo**: Eliminar vectores críticos de seguridad. **Aquí integramos `mscs`** para reemplazar pickle.
-**Duración**: 3-4 semanas
-**Tag al cerrar**: `v1.2.0-phase02`
+**Duración real**: 1 sesión
+**Tag**: `v1.2.0-phase02`
+**Cierre**: ver [snapshot/PHASE_02_CLOSURE.md](snapshot/PHASE_02_CLOSURE.md)
+
+**Resultado**: 421 tests pasando (43 nuevos de seguridad), cobertura mejorada
+en `nectar.py` (62% → 72%) y agregado `security.py` (83%). 0 usos de
+`pickle` en producción, 0 usos de `random.random()` sensibles. Bandit 100%
+limpio (0 HIGH, 0 MEDIUM, 0 LOW vs 3 MEDIUM + 4 LOW previos). pip-audit
+limpio. HMAC-SHA256 sobre `DanceMessage`/`RoyalMessage`/`PheromoneDeposit`;
+Queen-only enforcement en `RoyalCommand` priority ≥ 8; protocolo Raft-like
+con `term_number` monotónico y votos firmados en `QueenSuccession`. Rate
+limiting en `submit_task`/`execute_on_cell`. Path validation en
+`HoneyArchive` (incluye fix `/tmp/honey` → `tempfile.gettempdir()`).
+Bounded growth en `PheromoneTrail._deposits` (OrderedDict + LRU). Overhead
+end-to-end medido: +3.5% sobre baseline (target <5%).
 
 ### Cambios estructurales
 

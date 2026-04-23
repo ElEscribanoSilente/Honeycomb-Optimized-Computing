@@ -56,10 +56,17 @@ from typing import (
     Dict, List, Optional, Set, Tuple, Callable,
     Any, Iterator, Deque, TypeVar,
 )
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 import numpy as np
+import mscs as _mscs
 
 from .core import HexCoord, HexDirection, HoneycombCell, HoneycombGrid
+from .security import (
+    sign_payload as _sign_payload,
+    verify_signature as _verify_signature,
+    sanitize_error,
+    secure_random,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +115,53 @@ class PheromoneType(Enum):
 
 @dataclass
 class PheromoneDeposit:
-    """Un depósito individual de feromona."""
+    """
+    Un depósito individual de feromona.
+
+    Phase 2: soporta firma HMAC-SHA256 sobre los campos de identidad
+    inmutables (``ptype``, ``source``, timestamp original). ``intensity``
+    NO forma parte del HMAC porque varía con deposits, decay y diffusion.
+    """
     ptype: PheromoneType
     intensity: float
     timestamp: float
     source: Optional[HexCoord] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+    signature: Optional[bytes] = None  # HMAC-SHA256 sobre identity fields
+
     def decay(self, elapsed: float) -> float:
         """Aplica decaimiento basado en tiempo transcurrido."""
         decay_factor = math.exp(-self.ptype.decay_rate() * elapsed)
         self.intensity *= decay_factor
         return self.intensity
+
+    def _canonical_payload(self) -> bytes:
+        """
+        Bytes estables para HMAC. Solo incluye campos de identidad inmutables
+        (``ptype`` + ``source``). ``intensity``, ``timestamp`` y ``metadata``
+        evolucionan con re-depósitos, decay y difusión — firmarlos obligaría
+        a re-firmar en cada mutación, inútil cuando todos los nodos comparten
+        la misma clave HMAC. El propósito de la firma aquí es atestiguar
+        origen ("este depósito proviene de un nodo con la clave HMAC"),
+        no inmutabilidad de valor.
+        """
+        src = (self.source.q, self.source.r) if self.source is not None else None
+        return _mscs.dumps({
+            "kind": "pheromone",
+            "ptype": self.ptype.value,
+            "source": src,
+        })
+
+    def sign(self, key: Optional[bytes] = None) -> "PheromoneDeposit":
+        """Firma este depósito con HMAC-SHA256. Retorna ``self``."""
+        self.signature = _sign_payload(self._canonical_payload(), key=key)
+        return self
+
+    def verify(self, key: Optional[bytes] = None) -> bool:
+        """Verifica la firma. Retorna False si falta o no coincide."""
+        if self.signature is None:
+            return False
+        return _verify_signature(self._canonical_payload(), self.signature, key=key)
 
 
 class PheromoneDecay(Enum):
@@ -156,12 +198,17 @@ class PheromoneTrail:
     DEFAULT_DIFFUSE_THRESHOLD: float = 0.01
     # Default minimum intensity for hotspot detection
     DEFAULT_HOTSPOT_THRESHOLD: float = 0.5
+    # Phase 2: bounded growth para mitigar DoS.
+    DEFAULT_MAX_COORDS: int = 10_000
+    DEFAULT_MAX_METADATA_KEYS: int = 100
 
     def __init__(
         self,
         decay_strategy: PheromoneDecay = PheromoneDecay.EXPONENTIAL,
         max_intensity: float = 10.0,
-        evaporation_interval: float = 1.0
+        evaporation_interval: float = 1.0,
+        max_coords: Optional[int] = None,
+        max_metadata_keys: Optional[int] = None,
     ):
         # Phase 1 fix (B3): validar parámetros en construcción para prevenir NaN/inf
         # downstream. Antes los valores inválidos se silenciaban en uso, generando
@@ -179,12 +226,36 @@ class PheromoneTrail:
                 f"decay_strategy debe ser PheromoneDecay, recibido: {type(decay_strategy).__name__}"
             )
 
-        self._deposits: Dict[HexCoord, Dict[PheromoneType, PheromoneDeposit]] = defaultdict(dict)
+        # Phase 2: OrderedDict para tracking LRU y bound total de coordenadas.
+        # El attacker model: inundar feromonas en 10K+ coordenadas únicas hasta
+        # agotar memoria. El cap + LRU cierra ese vector. Per-coord ya está
+        # acotado por el número finito de PheromoneType (~9 entradas max).
+        self._deposits: "OrderedDict[HexCoord, Dict[PheromoneType, PheromoneDeposit]]" = OrderedDict()
         self._decay_strategy = decay_strategy
         self._max_intensity = float(max_intensity)
         self._evaporation_interval = float(evaporation_interval)
         self._last_evaporation = time.time()
+        self._max_coords = int(max_coords) if max_coords is not None else self.DEFAULT_MAX_COORDS
+        self._max_metadata_keys = int(max_metadata_keys) if max_metadata_keys is not None else self.DEFAULT_MAX_METADATA_KEYS
+        if self._max_coords <= 0:
+            raise ValueError(f"max_coords debe ser > 0, recibido: {max_coords!r}")
+        if self._max_metadata_keys <= 0:
+            raise ValueError(f"max_metadata_keys debe ser > 0, recibido: {max_metadata_keys!r}")
         self._lock = threading.RLock()
+
+    def _enforce_per_coord_bound(self, coord: HexCoord) -> None:
+        """
+        Phase 2: aplica cap LRU sobre el número total de coordenadas con
+        depósitos. Llamado desde ``deposit`` al crear una entrada nueva.
+        Evicta la coordenada más vieja (OrderedDict.popitem(last=False))
+        hasta cumplir con ``self._max_coords``.
+
+        El caller ya sostiene ``self._lock``.
+        """
+        # Marcar ``coord`` como la más reciente (move_to_end).
+        self._deposits.move_to_end(coord, last=True)
+        while len(self._deposits) > self._max_coords:
+            self._deposits.popitem(last=False)
     
     def deposit(
         self,
@@ -208,25 +279,55 @@ class PheromoneTrail:
             Nivel total después del depósito
         """
         with self._lock:
-            if ptype in self._deposits[coord]:
-                deposit = self._deposits[coord][ptype]
+            coord_entries = self._deposits.get(coord)
+            if coord_entries is not None and ptype in coord_entries:
+                deposit = coord_entries[ptype]
                 deposit.intensity = min(
                     self._max_intensity,
                     deposit.intensity + intensity
                 )
                 deposit.timestamp = time.time()
                 if metadata:
-                    deposit.metadata.update(metadata)
+                    # Phase 2: cap de metadata_keys para cerrar un vector
+                    # secundario de DoS (metadata unbounded por deposit).
+                    self._merge_metadata_bounded(deposit, metadata)
+                # Phase 2: marcamos coord como la más reciente (LRU)
+                self._deposits.move_to_end(coord, last=True)
+                # Phase 2: firma no cambia porque el payload canónico sólo
+                # cubre identidad (ptype+source), ambos inmutables.
             else:
-                self._deposits[coord][ptype] = PheromoneDeposit(
+                new_deposit = PheromoneDeposit(
                     ptype=ptype,
                     intensity=min(self._max_intensity, intensity),
                     timestamp=time.time(),
                     source=source,
-                    metadata=metadata or {}
+                    metadata={},
                 )
-            
+                if metadata:
+                    self._merge_metadata_bounded(new_deposit, metadata)
+                # Phase 2: firmar en creación. Verificaciones downstream
+                # (ej. replicación entre procesos) descartan depósitos
+                # sin firma válida.
+                new_deposit.sign()
+                if coord_entries is None:
+                    coord_entries = {}
+                    self._deposits[coord] = coord_entries
+                coord_entries[ptype] = new_deposit
+                # Phase 2: aplicar bound global de coordenadas (LRU).
+                self._enforce_per_coord_bound(coord)
+
             return self._deposits[coord][ptype].intensity
+
+    def _merge_metadata_bounded(
+        self,
+        deposit: PheromoneDeposit,
+        new_metadata: Dict[str, Any],
+    ) -> None:
+        """Fusiona ``new_metadata`` en ``deposit.metadata`` respetando el cap."""
+        for k, v in new_metadata.items():
+            if k in deposit.metadata or len(deposit.metadata) < self._max_metadata_keys:
+                deposit.metadata[k] = v
+            # else: descartar silenciosamente para no romper caller legítimo.
     
     def sense(self, coord: HexCoord, ptype: Optional[PheromoneType] = None) -> float:
         """
@@ -497,11 +598,17 @@ class DanceDirection(Enum):
 class DanceMessage:
     """
     Mensaje codificado en una danza waggle.
-    
+
     La danza de las abejas codifica:
     - Dirección al recurso (relativa al sol)
     - Distancia al recurso (duración de la danza)
     - Calidad del recurso (vigor de la danza)
+
+    Phase 2: soporta firma HMAC-SHA256 sobre los campos de identidad
+    inmutables (``source``, ``direction``, ``distance``, ``resource_type``,
+    ``timestamp``). ``quality`` y ``ttl`` evolucionan durante la propagación,
+    así que no forman parte del HMAC — la firma atestigua únicamente que
+    el mensaje proviene de un nodo con la clave compartida.
     """
     source: HexCoord              # Quien baila
     direction: DanceDirection     # Hacia dónde
@@ -511,7 +618,30 @@ class DanceMessage:
     timestamp: float = field(default_factory=time.time)
     ttl: int = 10                 # Time to live (broadcasts restantes)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+    signature: Optional[bytes] = None  # Phase 2: HMAC-SHA256 sobre identity
+
+    def _canonical_payload(self) -> bytes:
+        """Bytes estables para HMAC. Excluye ``quality`` y ``ttl`` mutables."""
+        return _mscs.dumps({
+            "kind": "dance",
+            "source": (self.source.q, self.source.r),
+            "direction": self.direction.value,
+            "distance": self.distance,
+            "resource_type": self.resource_type,
+            "timestamp": round(self.timestamp, 6),
+        })
+
+    def sign(self, key: Optional[bytes] = None) -> "DanceMessage":
+        """Firma este mensaje con HMAC-SHA256. Retorna ``self`` para chaining."""
+        self.signature = _sign_payload(self._canonical_payload(), key=key)
+        return self
+
+    def verify(self, key: Optional[bytes] = None) -> bool:
+        """Verifica la firma. False si falta o no coincide."""
+        if self.signature is None:
+            return False
+        return _verify_signature(self._canonical_payload(), self.signature, key=key)
+
     def encode(self) -> bytes:
         """Codifica el mensaje para transmisión."""
         # Formato compacto: tipo|dir|dist|quality
@@ -606,7 +736,10 @@ class WaggleDance:
             ttl=self._broadcast_range * 2,
             metadata=metadata or {}
         )
-        
+        # Phase 2: firmar al origen. La firma sobrevive a la propagación
+        # porque _canonical_payload excluye quality y ttl (los mutables).
+        message.sign()
+
         with self._lock:
             self._active_dances[dancer].append(message)
             
@@ -615,7 +748,7 @@ class WaggleDance:
                 try:
                     observer(message)
                 except Exception as e:
-                    logger.error(f"Dance observer error: {e}")
+                    logger.error(f"Dance observer error: {sanitize_error(e)}")
         
         return message
     
@@ -659,7 +792,11 @@ class WaggleDance:
                         elif direction == preferred_direction.opposite():
                             attenuation *= 0.5
                         
-                        # Crear mensaje atenuado
+                        # Crear mensaje atenuado. Phase 2: preservamos la
+                        # firma original — la firma solo cubre identity
+                        # fields (source/direction/distance/resource_type/
+                        # timestamp), que no cambian en propagación. Atenuar
+                        # quality/ttl no invalida la firma.
                         propagated_dance = DanceMessage(
                             source=dance.source,
                             direction=dance.direction,
@@ -668,7 +805,8 @@ class WaggleDance:
                             resource_type=dance.resource_type,
                             timestamp=dance.timestamp,
                             ttl=dance.ttl - 1,
-                            metadata=dance.metadata.copy()
+                            metadata=dance.metadata.copy(),
+                            signature=dance.signature,
                         )
                         
                         # Solo propagar si supera umbral
@@ -773,59 +911,155 @@ class RoyalCommand(Enum):
 
 @dataclass
 class RoyalMessage:
-    """Mensaje de la reina."""
+    """
+    Mensaje de la reina.
+
+    Phase 2: incluye ``issuer`` (HexCoord de la celda que emite el comando)
+    y ``signature`` HMAC-SHA256. ``acknowledged`` es mutable y no forma
+    parte del HMAC.
+
+    Reglas de emisión:
+    - Cualquier celda puede emitir con priority < 8.
+    - Solo la QueenCell actual puede emitir priority >= 8 (ver
+      :meth:`RoyalJelly.issue_command`).
+    """
     command: RoyalCommand
     priority: int                   # 0-10 (10 = máxima)
     target: Optional[HexCoord]      # Destino específico o None para broadcast
     params: Dict[str, Any]
     timestamp: float = field(default_factory=time.time)
     acknowledged: Set[HexCoord] = field(default_factory=set)
+    issuer: Optional[HexCoord] = None  # Phase 2: quién emitió el comando
+    signature: Optional[bytes] = None  # Phase 2: HMAC-SHA256
+
+    def _canonical_payload(self) -> bytes:
+        """Bytes estables para HMAC. Excluye ``acknowledged`` mutable."""
+        issuer = (self.issuer.q, self.issuer.r) if self.issuer is not None else None
+        target = (self.target.q, self.target.r) if self.target is not None else None
+        # params se incluye serializado canónicamente vía mscs para detectar
+        # manipulación de argumentos (p.e. atacante cambia ``target_radius``
+        # en un EVACUATE para ampliar el área evacuada).
+        return _mscs.dumps({
+            "kind": "royal",
+            "command": self.command.value,
+            "priority": self.priority,
+            "target": target,
+            "issuer": issuer,
+            "timestamp": round(self.timestamp, 6),
+            "params": self.params,
+        })
+
+    def sign(self, key: Optional[bytes] = None) -> "RoyalMessage":
+        """Firma este comando con HMAC-SHA256. Retorna ``self``."""
+        self.signature = _sign_payload(self._canonical_payload(), key=key)
+        return self
+
+    def verify(self, key: Optional[bytes] = None) -> bool:
+        """Verifica la firma. False si falta o no coincide."""
+        if self.signature is None:
+            return False
+        return _verify_signature(self._canonical_payload(), self.signature, key=key)
 
 
 class RoyalJelly:
     """
     Canal de comunicación de alta prioridad Reina → Colmena.
-    
+
     Características:
     - Entrega garantizada a todas las celdas
     - Prioridad sobre otros tipos de comunicación
     - Acknowledgement de recepción
     - Cola de comandos pendientes
+
+    Phase 2 — políticas de autorización:
+    - Solo la :class:`QueenCell` actual puede emitir comandos con
+      ``priority >= HIGH_PRIORITY_THRESHOLD``. Intentos de otras celdas
+      son rechazados con :class:`PermissionError`.
+    - Todos los comandos se firman con HMAC-SHA256 (``RoyalMessage.sign``).
+    - Cuando ocurre sucesión de reina, el ``QueenSuccession`` llama a
+      :meth:`update_queen_coord` para que los checks siguientes se evalúen
+      contra la reina nueva.
     """
-    
+
+    # Phase 2: prioridad mínima que requiere ser emitida por la Queen.
+    HIGH_PRIORITY_THRESHOLD: int = 8
+
     def __init__(self, queen_coord: HexCoord):
         self._queen_coord = queen_coord
         self._pending_commands: List[RoyalMessage] = []
         self._command_history: Deque[RoyalMessage] = deque(maxlen=100)
         self._lock = threading.RLock()
         self._subscribers: Set[HexCoord] = set()
-    
+
+    def update_queen_coord(self, new_queen: HexCoord) -> None:
+        """
+        Actualiza la coordenada de la reina. Llamar tras una sucesión
+        exitosa. Thread-safe.
+        """
+        with self._lock:
+            self._queen_coord = new_queen
+
+    @property
+    def queen_coord(self) -> HexCoord:
+        """Retorna la coord de la reina actual (read-only property)."""
+        return self._queen_coord
+
     def issue_command(
         self,
         command: RoyalCommand,
         priority: int = 5,
         target: Optional[HexCoord] = None,
-        params: Optional[Dict] = None
+        params: Optional[Dict] = None,
+        *,
+        issuer: Optional[HexCoord] = None,
     ) -> RoyalMessage:
         """
         Emite un comando real.
-        
+
         Args:
             command: Tipo de comando
             priority: Prioridad (0-10)
             target: Destino específico o None para broadcast
             params: Parámetros adicionales
-            
+            issuer: Coord de la celda que emite. Si priority >=
+                ``HIGH_PRIORITY_THRESHOLD`` debe ser la reina actual.
+                Si None y priority < threshold, se asume la reina (compat).
+
         Returns:
-            El mensaje creado
+            El mensaje creado, firmado con HMAC-SHA256.
+
+        Raises:
+            PermissionError: si ``priority >= HIGH_PRIORITY_THRESHOLD``
+                             y el issuer no es la reina actual.
         """
+        clamped_priority = min(10, max(0, priority))
+
+        # Phase 2: Queen-only enforcement para alta prioridad. Esto cierra
+        # el vector "DroneCell forja EMERGENCY priority=10" — aun con la
+        # clave HMAC compartida, solo la QueenCell puede invocar este
+        # path sin recibir PermissionError.
+        effective_issuer = issuer if issuer is not None else self._queen_coord
+        if clamped_priority >= self.HIGH_PRIORITY_THRESHOLD:
+            if issuer is None:
+                raise PermissionError(
+                    f"issuer es obligatorio para priority>={self.HIGH_PRIORITY_THRESHOLD}"
+                )
+            if issuer != self._queen_coord:
+                raise PermissionError(
+                    f"Solo la reina ({self._queen_coord}) puede emitir "
+                    f"comandos con priority={clamped_priority}; issuer={issuer}"
+                )
+
         message = RoyalMessage(
             command=command,
-            priority=min(10, max(0, priority)),
+            priority=clamped_priority,
             target=target,
             params=params or {},
+            issuer=effective_issuer,
         )
-        
+        # Phase 2: firmar tras validar autorización.
+        message.sign()
+
         with self._lock:
             # Insertar ordenado por prioridad (mayor primero)
             inserted = False
@@ -834,11 +1068,14 @@ class RoyalJelly:
                     self._pending_commands.insert(i, message)
                     inserted = True
                     break
-            
+
             if not inserted:
                 self._pending_commands.append(message)
-        
-        logger.info(f"Royal command issued: {command.name} (priority={priority})")
+
+        logger.info(
+            "Royal command issued: %s (priority=%d, issuer=%s)",
+            command.name, clamped_priority, effective_issuer,
+        )
         return message
     
     def subscribe(self, coord: HexCoord) -> None:
@@ -905,13 +1142,26 @@ class RoyalJelly:
                         self._pending_commands.remove(command)
                         self._command_history.append(command)
     
-    def emergency_broadcast(self, message: str, params: Optional[Dict] = None) -> None:
-        """Emite una alerta de emergencia con máxima prioridad."""
+    def emergency_broadcast(
+        self,
+        message: str,
+        params: Optional[Dict] = None,
+        *,
+        issuer: Optional[HexCoord] = None,
+    ) -> None:
+        """
+        Emite una alerta de emergencia con máxima prioridad.
+
+        Phase 2: ``issuer`` debe ser la reina actual (o None, en cuyo caso
+        asumimos a la reina). Si otra celda lo invoca, se lanza
+        :class:`PermissionError`.
+        """
         self.issue_command(
             RoyalCommand.EMERGENCY,
             priority=10,
             target=None,
-            params={"message": message, **(params or {})}
+            params={"message": message, **(params or {})},
+            issuer=issuer if issuer is not None else self._queen_coord,
         )
     
     def get_pending_count(self) -> int:
@@ -1052,10 +1302,19 @@ class NectarFlow:
         command: RoyalCommand,
         priority: int = 5,
         target: Optional[HexCoord] = None,
-        params: Optional[Dict] = None
+        params: Optional[Dict] = None,
+        *,
+        issuer: Optional[HexCoord] = None,
     ) -> RoyalMessage:
-        """Emite un comando real."""
-        return self._royal.issue_command(command, priority, target, params)
+        """
+        Emite un comando real.
+
+        Phase 2: para ``priority >= 8`` se requiere ``issuer`` y debe ser
+        la QueenCell actual (enforced en ``RoyalJelly.issue_command``).
+        """
+        return self._royal.issue_command(
+            command, priority, target, params, issuer=issuer
+        )
     
     def get_royal_commands(
         self,

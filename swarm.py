@@ -46,7 +46,6 @@ Flujo de scheduling:
 from __future__ import annotations
 
 import time
-import random
 import threading
 import heapq
 import logging
@@ -62,6 +61,13 @@ import numpy as np
 
 from .core import HexCoord, HexDirection, HoneycombCell, HoneycombGrid, WorkerCell
 from .nectar import PheromoneTrail, PheromoneType, NectarFlow
+from .security import (
+    secure_random,
+    secure_shuffle,
+    rate_limit,
+    RateLimitExceeded,
+    sanitize_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,14 +208,21 @@ class BeeBehavior(ABC):
     def should_respond(self, stimulus: float) -> bool:
         """
         Modelo de umbral de respuesta.
-        
+
         Probabilidad de responder = stimulus^2 / (stimulus^2 + threshold^2)
+
+        Phase 2: usamos ``secrets.SystemRandom`` (CSPRNG) para que un atacante
+        con conocimiento del seed global de ``random`` no pueda predecir qué
+        tareas tomará una celda. Aunque la secuencia no necesita ser segura
+        criptográficamente *por sí misma*, esta función decide qué trabajo
+        acepta una abeja — manipular esa decisión es un vector de carga/
+        denegación. CSPRNG es barato (μs por llamada) y cierra el vector.
         """
         if stimulus <= 0:
             return False
-        
+
         prob = (stimulus ** 2) / (stimulus ** 2 + self.response_threshold ** 2)
-        return random.random() < prob
+        return secure_random() < prob
     
     def deposit_success_pheromone(self, task: HiveTask) -> None:
         """Deposita feromona de éxito después de completar tarea."""
@@ -583,6 +596,14 @@ class SwarmConfig:
     max_queue_size: int = 10000
     task_timeout_seconds: float = 30.0
     max_task_retries: int = 3
+
+    # Phase 2: rate limiting para cerrar vectores de DoS contra el API público.
+    # `submit_rate_per_second` permite ráfagas iniciales via `burst` — default
+    # burst = 2× rate para no romper cargas normales.
+    submit_rate_per_second: float = 1000.0
+    submit_rate_burst: int = 2000
+    execute_rate_per_second: float = 10000.0
+    execute_rate_burst: int = 20000
     
     # Balanceo
     rebalance_interval_ticks: int = 10
@@ -841,23 +862,35 @@ class SwarmScheduler:
         self.grid = grid
         self.nectar = nectar_flow
         self.config = config or SwarmConfig()
-        
+
         # Cola de tareas (heap por prioridad)
         self._task_queue: List[HiveTask] = []
         self._task_index: Dict[str, HiveTask] = {}
-        
+
         # Comportamientos por celda
         self._behaviors: Dict[HexCoord, BeeBehavior] = {}
-        
+
         # Balanceador
         self._balancer = SwarmBalancer(grid, self.config)
-        
+
         # Estado
         self._tick_count = 0
         self._tasks_completed = 0
         self._tasks_failed = 0
         self._lock = threading.RLock()
-        
+
+        # Phase 2: rate limiting de APIs públicas para mitigar DoS.
+        # Instanciamos los limitadores aquí para leer config en runtime.
+        from .security import RateLimiter as _RateLimiter
+        self._submit_limiter = _RateLimiter(
+            per_second=self.config.submit_rate_per_second,
+            burst=self.config.submit_rate_burst,
+        )
+        self._execute_limiter = _RateLimiter(
+            per_second=self.config.execute_rate_per_second,
+            burst=self.config.execute_rate_burst,
+        )
+
         # Inicializar comportamientos
         self._initialize_behaviors()
     
@@ -874,8 +907,10 @@ class SwarmScheduler:
         n_scouts = int(n_total * self.config.scouts_ratio)
         # El resto son guardias
         
-        random.shuffle(worker_cells)
-        
+        # Phase 2: CSPRNG shuffle para que la asignación inicial de roles
+        # no sea predecible desde fuera.
+        secure_shuffle(worker_cells)
+
         for i, cell in enumerate(worker_cells):
             if i < n_foragers:
                 self._behaviors[cell.coord] = ForagerBehavior(cell, self.nectar)
@@ -909,6 +944,14 @@ class SwarmScheduler:
         Returns:
             La tarea creada
         """
+        # Phase 2: rate limiting. Rechaza submits si el bucket está vacío
+        # para impedir que un cliente agotó la cola por flooding.
+        if not self._submit_limiter.try_acquire():
+            raise RateLimitExceeded(
+                f"submit_task rate limit exceeded "
+                f"({self.config.submit_rate_per_second}/s, burst={self.config.submit_rate_burst})"
+            )
+
         task = HiveTask(
             priority=priority.value,
             task_type=task_type,
@@ -917,16 +960,39 @@ class SwarmScheduler:
             timeout_seconds=timeout,
             callback=callback,
         )
-        
+
         with self._lock:
             if len(self._task_queue) >= self.config.max_queue_size:
                 raise RuntimeError("Task queue full")
-            
+
             heapq.heappush(self._task_queue, task)
             self._task_index[task.task_id] = task
-        
+
         logger.debug(f"Task submitted: {task.task_id} ({task_type})")
         return task
+
+    def execute_on_cell(self, coord: HexCoord, task: HiveTask) -> bool:
+        """
+        Ejecuta una tarea directamente en una celda por su comportamiento
+        asociado. Phase 2: rate-limited para cerrar el vector de "ejecución
+        forzada" desde caller no-confiable.
+
+        Returns:
+            True si la ejecución fue exitosa.
+
+        Raises:
+            RateLimitExceeded: si se supera el ritmo permitido.
+            KeyError: si no hay behavior registrado para la celda.
+        """
+        if not self._execute_limiter.try_acquire():
+            raise RateLimitExceeded(
+                f"execute_on_cell rate limit exceeded "
+                f"({self.config.execute_rate_per_second}/s, burst={self.config.execute_rate_burst})"
+            )
+        behavior = self._behaviors.get(coord)
+        if behavior is None:
+            raise KeyError(f"No hay behavior registrado para la celda {coord}")
+        return behavior.execute_task(task)
     
     def get_task(self, task_id: str) -> Optional[HiveTask]:
         """Obtiene una tarea por ID."""
@@ -996,7 +1062,7 @@ class SwarmScheduler:
                         try:
                             task.callback(task.result)
                         except Exception as e:
-                            logger.error(f"Task callback error: {e}")
+                            logger.error(f"Task callback error: {sanitize_error(e)}")
                 else:
                     # Reintentar o marcar como fallida
                     if task.can_retry():

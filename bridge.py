@@ -46,6 +46,7 @@ from .core import (
     QueenCell, WorkerCell, DroneCell, NurseryCell,
     CellRole, CellState, HoneycombConfig
 )
+from .security import sanitize_error
 
 logger = logging.getLogger(__name__)
 
@@ -494,7 +495,7 @@ class GridToHypervisorMapper:
                                 self._cell_mapper.map_cell(coord, vcore)
                             # Si no hay vCores libres (hypervisor devuelve None), se omite sin error
                         except Exception as e:
-                            logger.error(f"Failed to allocate vCore for {coord}: {e}")
+                            logger.error(f"Failed to allocate vCore for {coord}: {sanitize_error(e)}")
             
             self._initialized = True
             return True
@@ -671,7 +672,7 @@ class CAMVHoneycombBridge:
             self._executions += 1
             return result
         except Exception as e:
-            logger.error(f"Execution error on cell {coord}: {e}")
+            logger.error(f"Execution error on cell {coord}: {sanitize_error(e)}")
             self._errors += 1
             return None
     

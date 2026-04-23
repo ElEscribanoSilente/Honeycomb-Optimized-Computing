@@ -50,7 +50,6 @@ Diagrama de resiliencia:
 from __future__ import annotations
 
 import time
-import random
 import threading
 import logging
 from enum import Enum, auto
@@ -59,13 +58,19 @@ from typing import (
     Dict, List, Optional, Set, Tuple, Callable,
     Any, TypeVar, Deque
 )
-from collections import deque
+from collections import deque, defaultdict
 from abc import ABC, abstractmethod
+import mscs as _mscs
 
 from .core import (
     HexCoord, HexDirection, HoneycombGrid, HoneycombCell,
     QueenCell, WorkerCell, DroneCell, NurseryCell,
     CellRole, CellState, HoneycombConfig
+)
+from .security import (
+    sign_payload as _sign_payload,
+    verify_signature as _verify_signature,
+    sanitize_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -318,7 +323,7 @@ class CellFailover:
             
             return True
         except Exception as e:
-            logger.error(f"Migration error: {e}")
+            logger.error(f"Migration error: {sanitize_error(e)}")
             return False
     
     def mark_recovered(self, coord: HexCoord) -> bool:
@@ -366,20 +371,66 @@ class CellFailover:
 # QUEEN SUCCESSION
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@dataclass
+class Vote:
+    """
+    Un voto firmado en una elección de reina.
+
+    Phase 2 — Raft-like:
+    - ``term`` monótono y acotado al término de la elección en curso.
+    - ``signature`` HMAC-SHA256 cubre (voter, candidate, term, timestamp).
+    - Un voter no puede aparecer en más de un voto por term (enforced al tallyar).
+    """
+    voter: HexCoord
+    candidate: HexCoord
+    term: int
+    timestamp: float = field(default_factory=time.time)
+    signature: Optional[bytes] = None
+
+    def _canonical_payload(self) -> bytes:
+        return _mscs.dumps({
+            "kind": "vote",
+            "voter": (self.voter.q, self.voter.r),
+            "candidate": (self.candidate.q, self.candidate.r),
+            "term": self.term,
+            "timestamp": round(self.timestamp, 6),
+        })
+
+    def sign(self, key: Optional[bytes] = None) -> "Vote":
+        """Firma el voto con HMAC-SHA256. Retorna ``self``."""
+        self.signature = _sign_payload(self._canonical_payload(), key=key)
+        return self
+
+    def verify(self, key: Optional[bytes] = None) -> bool:
+        """True si la firma existe y es válida."""
+        if self.signature is None:
+            return False
+        return _verify_signature(self._canonical_payload(), self.signature, key=key)
+
+
 class QueenSuccession:
     """
     Gestiona la sucesión de la reina en caso de fallo.
-    
-    Implementa un protocolo de elección similar a Raft,
-    adaptado a la topología hexagonal.
-    
+
+    Implementa un protocolo de elección similar a Raft, adaptado a la
+    topología hexagonal (Phase 2 hardening):
+
+    - ``term_number`` monotónico por elección. Votos de términos antiguos
+      son descartados.
+    - Votos firmados con HMAC-SHA256 (``Vote.sign/verify``).
+    - Rechazo de votos duplicados (cada voter cuenta una sola vez por term).
+    - Quórum numérico MAYORITARIO (``>50%``) — el fix B4 de Fase 1 exigía
+      mayoría; Fase 2 añade la autenticación criptográfica necesaria para
+      que la mayoría sea vinculante frente a votos forjados.
+
     Proceso de sucesión:
     1. Detectar pérdida de heartbeat de la reina
-    2. Iniciar período de elección
+    2. Iniciar período de elección (incrementa term)
     3. Celdas candidatas proponen liderazgo
-    4. Votación ponderada por distancia al centro
-    5. Nueva reina asume coordinación
-    
+    4. Votación firmada ponderada por distancia/carga
+    5. Tally con rechazo de duplicados/firmas inválidas
+    6. Nueva reina asume coordinación si hay mayoría
+
     Uso:
         succession = QueenSuccession(grid, config)
         if succession.check_queen_health():
@@ -387,17 +438,24 @@ class QueenSuccession:
         else:
             new_queen = succession.elect_new_queen()
     """
-    
+
     def __init__(self, grid: HoneycombGrid, config: ResilienceConfig):
         self.grid = grid
         self.config = config
-        
+
         # Estado
         self._last_queen_heartbeat = time.time()
         self._election_in_progress = False
         self._candidates: List[HexCoord] = []
         self._votes: Dict[HexCoord, int] = {}
+        # Phase 2: term number monotónico por elección (Raft-like).
+        self._term_number: int = 0
         self._lock = threading.RLock()
+
+    @property
+    def current_term(self) -> int:
+        """Retorna el último ``term`` incrementado por ``_conduct_election``."""
+        return self._term_number
     
     def check_queen_health(self) -> bool:
         """
@@ -490,60 +548,127 @@ class QueenSuccession:
         
         return candidates
     
-    def _conduct_election(self, candidates: List[HexCoord]) -> Optional[HexCoord]:
-        """Conduce la votación entre candidatos."""
-        votes = {coord: 0 for coord in candidates}
-        
-        # Cada celda vota
-        for coord, cell in self.grid._cells.items():
-            if cell.state == CellState.FAILED:
+    def _pick_best_candidate(
+        self,
+        voter: HexCoord,
+        candidates: List[HexCoord],
+    ) -> Optional[HexCoord]:
+        """
+        Elige el mejor candidato desde la perspectiva de ``voter``.
+        Score = -distancia - (load × 5). Mayor es mejor.
+        """
+        best_candidate: Optional[HexCoord] = None
+        best_score = float("-inf")
+        for candidate in candidates:
+            candidate_cell = self.grid.get_cell(candidate)
+            if not candidate_cell:
                 continue
-            
-            # Votar por el candidato más cercano con mejor salud
-            best_candidate = None
-            best_score = float('-inf')
-            
-            for candidate in candidates:
-                # Score = -distancia - carga (menor es mejor)
-                candidate_cell = self.grid.get_cell(candidate)
-                if not candidate_cell:
-                    continue
-                
-                distance = coord.distance_to(candidate)
-                score = -distance - (candidate_cell.load * 5)
-                
-                if score > best_score:
-                    best_score = score
-                    best_candidate = candidate
-            
-            if best_candidate:
-                votes[best_candidate] += 1
-        
-        # Determinar ganador
-        if not votes:
-            return None
+            distance = voter.distance_to(candidate)
+            score = -distance - (candidate_cell.load * 5)
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+        return best_candidate
 
-        winner = max(votes.keys(), key=lambda c: votes[c])
+    def _tally_votes(
+        self,
+        votes: List[Vote],
+        candidates: Set[HexCoord],
+        expected_term: int,
+    ) -> Optional[HexCoord]:
+        """
+        Cuenta votos firmados. Rechaza:
 
-        # Phase 1 fix (B4): quorum vinculante. Antes se retornaba el "mejor"
-        # candidato aunque no tuviera mayoría, lo que permitía instalar reinas
-        # sin autoridad legítima si >50% de las celdas estaban fallidas o no
-        # votaron. Ahora la elección falla limpiamente y el caller decide cómo
-        # proceder (reintento, modo degradado, etc.).
-        total_votes = sum(votes.values())
-        if total_votes == 0:
-            logger.error("Election failed: no votes were cast")
-            return None
+        - Votos con firma HMAC inválida o ausente.
+        - Votos con ``term`` distinto del esperado (anti-replay de elecciones).
+        - Votos para candidatos no registrados.
+        - Votos duplicados del mismo ``voter`` (solo el primero cuenta).
 
-        majority_threshold = total_votes // 2 + 1
-        if votes[winner] < majority_threshold:
+        Retorna el candidato ganador si supera mayoría estricta (>50%)
+        de los votos válidos. Retorna ``None`` en otro caso.
+        """
+        tallies: Dict[HexCoord, int] = defaultdict(int)
+        voters_counted: Set[HexCoord] = set()
+        rejected = {
+            "bad_signature": 0,
+            "wrong_term": 0,
+            "unknown_candidate": 0,
+            "duplicate_voter": 0,
+        }
+
+        for vote in votes:
+            if not vote.verify():
+                rejected["bad_signature"] += 1
+                logger.warning(
+                    "Vote from %s rejected: invalid/missing signature", vote.voter
+                )
+                continue
+            if vote.term != expected_term:
+                rejected["wrong_term"] += 1
+                logger.warning(
+                    "Vote from %s rejected: term %d != expected %d",
+                    vote.voter, vote.term, expected_term,
+                )
+                continue
+            if vote.candidate not in candidates:
+                rejected["unknown_candidate"] += 1
+                logger.warning(
+                    "Vote from %s rejected: candidate %s not in candidate set",
+                    vote.voter, vote.candidate,
+                )
+                continue
+            if vote.voter in voters_counted:
+                rejected["duplicate_voter"] += 1
+                logger.warning(
+                    "Vote from %s rejected: duplicate in term %d",
+                    vote.voter, vote.term,
+                )
+                continue
+            voters_counted.add(vote.voter)
+            tallies[vote.candidate] += 1
+
+        total = sum(tallies.values())
+        if total == 0:
             logger.error(
-                f"Election failed: no quorum "
-                f"(winner had {votes[winner]}/{total_votes}, needed {majority_threshold})"
+                "Election term %d failed: no valid votes. Rejected: %s",
+                expected_term, rejected,
             )
             return None
 
+        winner = max(tallies, key=lambda c: tallies[c])
+        majority_threshold = total // 2 + 1
+        if tallies[winner] < majority_threshold:
+            logger.error(
+                "Election term %d failed: no quorum "
+                "(winner %s had %d/%d, needed %d). Rejected: %s",
+                expected_term, winner, tallies[winner], total,
+                majority_threshold, rejected,
+            )
+            return None
         return winner
+
+    def _conduct_election(self, candidates: List[HexCoord]) -> Optional[HexCoord]:
+        """
+        Conduce la votación entre candidatos. Phase 2: votos firmados con
+        HMAC-SHA256 y ``term`` monotónico.
+        """
+        with self._lock:
+            self._term_number += 1
+            term = self._term_number
+
+        # Cada celda viva construye y firma un voto.
+        votes: List[Vote] = []
+        for coord, cell in self.grid._cells.items():
+            if cell.state == CellState.FAILED:
+                continue
+            best = self._pick_best_candidate(coord, candidates)
+            if best is None:
+                continue
+            votes.append(Vote(voter=coord, candidate=best, term=term).sign())
+
+        # Phase 1 fix (B4) reforzado por Phase 2: el tally ahora rechaza
+        # votos forjados sin firma válida además de exigir mayoría.
+        return self._tally_votes(votes, set(candidates), expected_term=term)
     
     def _promote_to_queen(self, coord: HexCoord) -> Optional[QueenCell]:
         """Promueve una celda a reina."""
@@ -962,7 +1087,7 @@ class SwarmRecovery:
                 else:
                     stats["failed"] += 1
             except Exception as e:
-                logger.error(f"Recovery error for {coord}: {e}")
+                logger.error(f"Recovery error for {coord}: {sanitize_error(e)}")
                 stats["failed"] += 1
         
         return stats
@@ -1163,12 +1288,17 @@ class CombRepair:
     ) -> List['CombRepair.RepairIssue']:
         """Verifica integridad de datos."""
         issues = []
-        
-        # Verificar metadata corrupta
+
+        # Phase 2: verificamos integridad serializando con ``mscs`` en lugar
+        # de ``pickle``. Beneficios:
+        # 1. ``mscs`` rechaza tipos imposibles de serializar (lo que queremos
+        #    detectar como "corrupto") pero no permite payload RCE si un
+        #    atacante lograra plantar un callable en ``_metadata`` —al menos
+        #    la verificación no ejecuta código durante la serialización.
+        # 2. Se mantiene el contrato original: error → issue de severidad 8.
+        from . import security as _security
         try:
-            # Intentar serializar metadata
-            import pickle
-            pickle.dumps(cell._metadata)
+            _security.serialize(cell._metadata, sign=False)
         except Exception:
             issues.append(self.RepairIssue(
                 coord=coord,
@@ -1176,7 +1306,7 @@ class CombRepair:
                 severity=8,
                 details={}
             ))
-        
+
         return issues
     
     def repair_issue(self, issue: 'CombRepair.RepairIssue') -> bool:

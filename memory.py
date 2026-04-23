@@ -40,12 +40,13 @@ from __future__ import annotations
 
 import time
 import hashlib
+import tempfile
 import threading
 import zlib
-import pickle
 import logging
 from enum import Enum, auto
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import (
     Dict, List, Optional, Set, Tuple, Callable,
     Any, TypeVar, Generic, Iterator
@@ -54,6 +55,16 @@ from collections import OrderedDict
 import numpy as np
 
 from .core import HexCoord, HoneycombCell, HoneycombGrid
+from .security import (
+    serialize as _secure_serialize,
+    deserialize as _secure_deserialize,
+    MSCSecurityError,
+    secure_choice,
+    safe_join,
+    PathTraversalError,
+    sanitize_error,
+)
+import mscs as _mscs
 
 logger = logging.getLogger(__name__)
 
@@ -201,12 +212,16 @@ class PollenCache:
         Returns:
             True si se almacenó correctamente
         """
-        # Estimar tamaño
+        # Estimar tamaño (sin HMAC: solo contabilidad de cache, el valor se
+        # mantiene por referencia y nunca se deserializa desde bytes).
+        # Phase 2: sustituimos ``pickle.dumps`` por ``mscs.dumps`` — el mismo
+        # tamaño aproximado pero sin el riesgo de ``pickle`` y sin overhead
+        # de HMAC en la ruta hot del cache L1.
         try:
-            serialized = pickle.dumps(value)
+            serialized = _mscs.dumps(value)
             size = len(serialized)
         except Exception:
-            size = 1024  # Fallback
+            size = 1024  # Fallback cuando el valor no es serializable
 
         with self._lock:
             # Si reemplazamos clave existente, devolver su tamaño antes de
@@ -273,8 +288,10 @@ class PollenCache:
             key = max(self._cache.keys(), key=lambda k: self._cache[k].size_bytes)
         
         else:  # RANDOM
-            import random
-            key = random.choice(list(self._cache.keys()))
+            # Phase 2: ``secrets.SystemRandom`` (CSPRNG) en lugar de ``random``
+            # para que un atacante no pueda predecir qué entrada será evictada
+            # basándose en el seed global de ``random``.
+            key = secure_choice(list(self._cache.keys()))
         
         return self._evict_key(key)
     
@@ -439,10 +456,14 @@ class CombStorage:
             True si se almacenó correctamente
         """
         try:
-            # Serializar y comprimir
-            serialized = pickle.dumps(value)
+            # Phase 2: serialización segura con HMAC-SHA256.
+            # ``mscs`` rechaza clases no registradas en deserialización (strict=True)
+            # y la firma HMAC garantiza que los bytes no fueron manipulados
+            # entre ``put`` y ``get``. Esto reemplaza ``pickle.dumps``, que
+            # permitía ejecución de código arbitrario durante ``loads``.
+            serialized = _secure_serialize(value, sign=True)
             compressed = self._compress(serialized)
-            
+
             # Determinar ubicación
             primary = self._hash_to_coord(key)
             replicas = self._get_replicas(primary)
@@ -500,9 +521,16 @@ class CombStorage:
             try:
                 compressed = cell.data[key]
                 decompressed = self._decompress(compressed)
-                return pickle.loads(decompressed)
+                # Phase 2: ``mscs.loads`` en modo strict (rechaza clases no
+                # registradas) con verificación HMAC-SHA256. Cualquier
+                # manipulación de bytes entre put/get —incluido un payload
+                # malicioso— produce ``MSCSecurityError`` antes de reconstruir.
+                return _secure_deserialize(decompressed, verify=True, strict=True)
+            except MSCSecurityError as e:
+                logger.error(f"CombStorage security violation on key {key!r}: {sanitize_error(e)}")
+                return None
             except Exception as e:
-                logger.error(f"CombStorage get error: {e}")
+                logger.error(f"CombStorage get error: {sanitize_error(e)}")
                 return None
     
     def delete(self, key: str) -> bool:
@@ -576,13 +604,41 @@ class HoneyArchive:
     - Recuperación de fallos
     """
     
-    def __init__(self, config: MemoryConfig, base_path: str = "/tmp/honey"):
+    def __init__(self, config: MemoryConfig, base_path: Optional[str] = None):
         self.config = config
-        self.base_path = base_path
+        # Phase 2: resolvemos el base_path a un path absoluto canónico. Esto
+        # no crea el directorio (el checkpoint actual es in-memory) pero
+        # normaliza el valor para que ``safe_join`` lo use como raíz confinada.
+        # Por defecto usamos ``tempfile.gettempdir()`` en lugar del literal
+        # ``/tmp/honey``: Bandit B108 considera inseguro un path hard-coded en
+        # ``/tmp`` por el riesgo de race/symlink attacks en sistemas POSIX
+        # multi-usuario. ``tempfile.gettempdir`` respeta $TMPDIR, variables
+        # de entorno y quirks por plataforma.
+        if base_path is None:
+            base_path = str(Path(tempfile.gettempdir()) / "hoc-honey")
+        self.base_path: Path = Path(base_path).resolve()
         self._archive: Dict[str, bytes] = {}
         self._metadata: Dict[str, Dict] = {}
         self._lock = threading.RLock()
         self._tick_count = 0
+
+    def _validate_key(self, key: str) -> str:
+        """
+        Valida que ``key`` no intente escapar de ``base_path`` cuando se use
+        para nombrar ficheros en el checkpoint a disco. Rechaza:
+
+        - Null bytes.
+        - Rutas absolutas (``/etc/passwd``, ``C:\\Windows\\...``).
+        - Traversal (``../``, ``..\\``).
+
+        Devuelve el propio ``key`` si es válido. Lanza ``PathTraversalError``
+        si no. Es idempotente y no modifica disco.
+        """
+        # ``safe_join`` aplica las validaciones y lanza PathTraversalError
+        # si el resultado escapa de base_path. El path resuelto se descarta
+        # porque no vamos a escribir disco aún — solo validamos.
+        safe_join(self.base_path, key)
+        return key
     
     def _compress(self, data: bytes) -> bytes:
         """Compresión de alto nivel."""
@@ -612,9 +668,16 @@ class HoneyArchive:
             True si se archivó correctamente
         """
         try:
-            serialized = pickle.dumps(value)
+            # Phase 2: validar la clave contra path traversal — aun cuando el
+            # checkpoint actual es in-memory, la clave se usará como nombre
+            # de fichero cuando ``_checkpoint`` persista a disco en fases
+            # posteriores. Validar aquí cierra el vector antes de que exista.
+            self._validate_key(key)
+
+            # Serialización segura con HMAC-SHA256.
+            serialized = _secure_serialize(value, sign=True)
             compressed = self._compress(serialized)
-            
+
             with self._lock:
                 self._archive[key] = compressed
                 self._metadata[key] = {
@@ -624,11 +687,14 @@ class HoneyArchive:
                     "compression_ratio": len(serialized) / len(compressed) if compressed else 1,
                     **(metadata or {})
                 }
-            
+
             return True
-            
+
+        except PathTraversalError as e:
+            logger.error(f"HoneyArchive rejected key {key!r}: {sanitize_error(e)}")
+            return False
         except Exception as e:
-            logger.error(f"HoneyArchive archive error: {e}")
+            logger.error(f"HoneyArchive archive error: {sanitize_error(e)}")
             return False
     
     def retrieve(self, key: str) -> Optional[Any]:
@@ -645,9 +711,15 @@ class HoneyArchive:
             try:
                 compressed = self._archive[key]
                 decompressed = self._decompress(compressed)
-                return pickle.loads(decompressed)
+                # Phase 2: HMAC-SHA256 + registry strict. Igual que CombStorage.
+                return _secure_deserialize(decompressed, verify=True, strict=True)
+            except MSCSecurityError as e:
+                logger.error(
+                    f"HoneyArchive security violation on key {key!r}: {sanitize_error(e)}"
+                )
+                return None
             except Exception as e:
-                logger.error(f"HoneyArchive retrieve error: {e}")
+                logger.error(f"HoneyArchive retrieve error: {sanitize_error(e)}")
                 return None
     
     def delete(self, key: str) -> bool:

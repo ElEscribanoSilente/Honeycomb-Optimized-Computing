@@ -307,7 +307,7 @@ class CellMetrics:
         """Actualiza métricas gauge."""
         self.load.set(self.cell.load)
         self.vcore_count.set(len(self.cell._vcores))
-        self.pheromone_level.set(self.cell._pheromone_level)
+        self.pheromone_level.set(self.cell.pheromone_level)
     
     def get_snapshot(self) -> CellMetricSnapshot:
         """Obtiene snapshot actual."""
@@ -319,7 +319,7 @@ class CellMetrics:
             load=self.cell.load,
             vcore_count=len(self.cell._vcores),
             neighbor_count=self.cell.neighbor_count,
-            pheromone_level=self.cell._pheromone_level,
+            pheromone_level=self.cell.pheromone_level,
             error_count=self.cell._error_count,
             last_activity=self.cell._last_activity,
         )
@@ -524,7 +524,7 @@ class HiveMetrics:
             role_counts[cell.role] += 1
             total_load += cell.load
             total_vcores += len(cell._vcores)
-            total_pheromones += cell._pheromone_level
+            total_pheromones += cell.pheromone_level
             
             # Actualizar métricas de celda
             self._cell_metrics[coord].get_snapshot()
@@ -760,9 +760,9 @@ class HoneycombVisualizer:
             return self.LOAD_CHARS[load_idx]
         
         elif scheme == ColorScheme.PHEROMONE:
-            if cell._pheromone_level > 0.7:
+            if cell.pheromone_level > 0.7:
                 return "🔥"
-            elif cell._pheromone_level > 0.3:
+            elif cell.pheromone_level > 0.3:
                 return "🌡"
             else:
                 return "❄"
@@ -870,7 +870,7 @@ class HoneycombVisualizer:
             return colors.get(cell.role, "#ffffff")
         
         elif scheme == ColorScheme.PHEROMONE:
-            intensity = min(cell._pheromone_level, 1.0)
+            intensity = min(cell.pheromone_level, 1.0)
             return f"rgb({int(255*intensity)},100,{int(255*(1-intensity))})"
         
         return "#ffffff"
@@ -948,7 +948,7 @@ class HeatmapRenderer:
             if metric == "load":
                 values[coord] = cell.load
             elif metric == "pheromone":
-                values[coord] = cell._pheromone_level
+                values[coord] = cell.pheromone_level
             elif metric == "errors":
                 values[coord] = min(cell._error_count / 10, 1.0)
             else:
@@ -1092,18 +1092,18 @@ class FlowVisualizer:
         
         # Dibujar conexiones de feromonas
         for coord, cell in self.grid._cells.items():
-            if cell._pheromone_level < 0.1:
+            if cell.pheromone_level < 0.1:
                 continue
             
             x1 = center_x + hex_size * (3/2 * coord.q)
             y1 = center_y + hex_size * (math.sqrt(3)/2 * coord.q + math.sqrt(3) * coord.r)
             
             for neighbor in cell.get_all_neighbors():
-                if neighbor and neighbor._pheromone_level > 0.1:
+                if neighbor and neighbor.pheromone_level > 0.1:
                     x2 = center_x + hex_size * (3/2 * neighbor.coord.q)
                     y2 = center_y + hex_size * (math.sqrt(3)/2 * neighbor.coord.q + math.sqrt(3) * neighbor.coord.r)
                     
-                    intensity = (cell._pheromone_level + neighbor._pheromone_level) / 2
+                    intensity = (cell.pheromone_level + neighbor.pheromone_level) / 2
                     opacity = min(intensity, 0.8)
                     width = 1 + intensity * 3
                     
@@ -1159,13 +1159,13 @@ class FlowVisualizer:
         connections = 0
         
         for coord, cell in self.grid._cells.items():
-            total_pheromone += cell._pheromone_level
+            total_pheromone += cell.pheromone_level
             
             if cell._last_activity > 0.1:
                 active_cells += 1
             
             for neighbor in cell.get_all_neighbors():
-                if neighbor and cell._pheromone_level > 0.1 and neighbor._pheromone_level > 0.1:
+                if neighbor and cell.pheromone_level > 0.1 and neighbor.pheromone_level > 0.1:
                     connections += 1
         
         return {

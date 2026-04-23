@@ -1005,7 +1005,15 @@ class SwarmScheduler:
                         results["tasks_failed"] += 1
                         self._tasks_failed += 1
             
-            # Limpiar tareas completadas/fallidas
+            # Phase 1 fix (B2.5): limpiar también ``_task_index`` además de
+            # ``_task_queue``. Antes el índice crecía sin cota porque las tareas
+            # COMPLETED/FAILED/CANCELLED nunca se removían — leak silencioso de
+            # memoria proporcional al throughput total a lo largo de la vida del
+            # scheduler.
+            for t in self._task_queue:
+                if t.state not in (TaskState.PENDING, TaskState.RUNNING):
+                    self._task_index.pop(t.task_id, None)
+
             self._task_queue = [
                 t for t in self._task_queue
                 if t.state in (TaskState.PENDING, TaskState.RUNNING)

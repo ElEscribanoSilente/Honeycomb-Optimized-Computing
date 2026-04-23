@@ -190,7 +190,14 @@ class PollenCache:
     def put(self, key: str, value: Any) -> bool:
         """
         Almacena un valor en el cache.
-        
+
+        Phase 1 fix (B5): si la clave ya existía, el código anterior corría el
+        loop de evicción ANTES de restar el tamaño de la entrada vieja. Con
+        ``old_size + new_size > max_size`` esto disparaba evicciones innecesarias
+        (a veces de la propia clave) o terminaba con ``_total_size`` superando
+        el límite si ``new_size > old_size``. Ahora restamos primero y luego
+        evaluamos capacidad real.
+
         Returns:
             True si se almacenó correctamente
         """
@@ -200,16 +207,22 @@ class PollenCache:
             size = len(serialized)
         except Exception:
             size = 1024  # Fallback
-        
+
         with self._lock:
-            # Evict si es necesario
+            # Si reemplazamos clave existente, devolver su tamaño antes de
+            # los checks de capacidad para evitar evicciones espurias.
+            if key in self._cache:
+                old_entry = self._cache.pop(key)
+                self._total_size -= old_entry.size_bytes
+
+            # Evict si es necesario (después de liberar la entrada previa)
             while (
                 len(self._cache) >= self.config.pollen_max_items or
                 self._total_size + size > self.config.pollen_max_size_bytes
             ):
                 if not self._evict_one():
                     return False
-            
+
             # Crear entrada
             now = time.time()
             entry = CacheEntry(
@@ -219,15 +232,10 @@ class PollenCache:
                 created_at=now,
                 accessed_at=now,
             )
-            
-            # Reemplazar si existe
-            if key in self._cache:
-                old_entry = self._cache[key]
-                self._total_size -= old_entry.size_bytes
-            
+
             self._cache[key] = entry
             self._total_size += size
-            
+
             return True
     
     def delete(self, key: str) -> bool:

@@ -522,15 +522,27 @@ class QueenSuccession:
         # Determinar ganador
         if not votes:
             return None
-        
+
         winner = max(votes.keys(), key=lambda c: votes[c])
-        
-        # Verificar quorum
+
+        # Phase 1 fix (B4): quorum vinculante. Antes se retornaba el "mejor"
+        # candidato aunque no tuviera mayoría, lo que permitía instalar reinas
+        # sin autoridad legítima si >50% de las celdas estaban fallidas o no
+        # votaron. Ahora la elección falla limpiamente y el caller decide cómo
+        # proceder (reintento, modo degradado, etc.).
         total_votes = sum(votes.values())
-        if votes[winner] < total_votes // 2 + 1:
-            logger.warning("No candidate achieved majority")
-            return winner  # Aún así retornar el mejor
-        
+        if total_votes == 0:
+            logger.error("Election failed: no votes were cast")
+            return None
+
+        majority_threshold = total_votes // 2 + 1
+        if votes[winner] < majority_threshold:
+            logger.error(
+                f"Election failed: no quorum "
+                f"(winner had {votes[winner]}/{total_votes}, needed {majority_threshold})"
+            )
+            return None
+
         return winner
     
     def _promote_to_queen(self, coord: HexCoord) -> Optional[QueenCell]:
@@ -1199,17 +1211,34 @@ class CombRepair:
         return success
     
     def _repair_neighbor_link(self, issue: 'CombRepair.RepairIssue') -> bool:
-        """Repara conexión de vecino rota."""
+        """Repara conexión de vecino rota.
+
+        Phase 1 fix (B8): antes ``HexDirection[issue.details["direction"]]`` y
+        ``issue.details["neighbor"]`` propagaban KeyError sin manejo si los
+        detalles estaban malformados, crasheando ``repair_issue`` para todos los
+        tipos. Ahora un detalle inválido falla limpiamente (returna False con
+        log) sin afectar otras reparaciones.
+        """
         cell = self.grid.get_cell(issue.coord)
-        direction = HexDirection[issue.details["direction"]]
-        neighbor_coord = issue.details["neighbor"]
+
+        try:
+            direction_name = issue.details["direction"]
+            direction = HexDirection[direction_name]
+            neighbor_coord = issue.details["neighbor"]
+        except (KeyError, TypeError) as e:
+            logger.error(
+                f"Repair neighbor_link at {issue.coord}: invalid issue details "
+                f"({type(e).__name__}: {e})"
+            )
+            return False
+
         neighbor = self.grid.get_cell(neighbor_coord)
-        
+
         if cell and neighbor:
             cell.set_neighbor(direction, neighbor)
             neighbor.set_neighbor(direction.opposite(), cell)
             return True
-        
+
         return False
     
     def _repair_state_mismatch(self, issue: 'CombRepair.RepairIssue') -> bool:

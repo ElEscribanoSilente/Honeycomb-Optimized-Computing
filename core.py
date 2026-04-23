@@ -500,7 +500,13 @@ class RWLock:
 
     @contextmanager
     def write_lock(self, timeout: Optional[float] = None):
-        """Adquiere lock de escritura con timeout opcional."""
+        """Adquiere lock de escritura con timeout opcional.
+
+        Phase 1 fix (B1): refactor a try/finally — el bare ``except:`` original
+        capturaba ``BaseException`` (KeyboardInterrupt, SystemExit) silenciando
+        interrupciones legítimas. ``try/finally`` garantiza ``_writers_waiting -= 1``
+        en cualquier camino sin tocar el flujo de excepciones.
+        """
         timeout = timeout or self._DEFAULT_TIMEOUT
         deadline = time.monotonic() + timeout
 
@@ -515,10 +521,8 @@ class RWLock:
                         )
                     self._read_ready.wait(timeout=remaining)
                 self._writer_active = True
-            except:
+            finally:
                 self._writers_waiting -= 1
-                raise
-            self._writers_waiting -= 1
         try:
             yield
         finally:
@@ -605,17 +609,19 @@ class HexCoord:
         """Tercera coordenada cúbica (implícita)."""
         return -self.q - self.r
 
-    @cached_property
+    # B10: @cached_property es incompatible con slots=True en dataclass frozen.
+    # Las computaciones aquí son O(1) sobre dos enteros, así que @property basta.
+    @property
     def cube(self) -> CubeTuple:
         """Retorna coordenadas cúbicas (q, r, s)."""
         return (self.q, self.r, self.s)
 
-    @cached_property
+    @property
     def array(self) -> NDArray[np.int32]:
         """Representación NumPy para operaciones vectoriales."""
         return np.array([self.q, self.r], dtype=np.int32)
 
-    @cached_property
+    @property
     def magnitude(self) -> int:
         """Distancia desde el origen."""
         return (abs(self.q) + abs(self.r) + abs(self.s)) // 2

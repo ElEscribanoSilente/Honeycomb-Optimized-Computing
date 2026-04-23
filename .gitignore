@@ -8,6 +8,8 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+.hypothesis/
+.claude/
 *.so
 .env
 .venv/

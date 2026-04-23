@@ -1,0 +1,2 @@
+No known vulnerabilities found
+{"dependencies": [{"name": "numpy", "version": "2.4.4", "vulns": []}], "fixes": []}

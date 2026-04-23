@@ -163,10 +163,26 @@ class PheromoneTrail:
         max_intensity: float = 10.0,
         evaporation_interval: float = 1.0
     ):
+        # Phase 1 fix (B3): validar parámetros en construcción para prevenir NaN/inf
+        # downstream. Antes los valores inválidos se silenciaban en uso, generando
+        # comportamiento impredecible.
+        if not isinstance(max_intensity, (int, float)) or max_intensity <= 0:
+            raise ValueError(
+                f"max_intensity debe ser float > 0, recibido: {max_intensity!r}"
+            )
+        if not isinstance(evaporation_interval, (int, float)) or evaporation_interval < 0:
+            raise ValueError(
+                f"evaporation_interval debe ser float >= 0, recibido: {evaporation_interval!r}"
+            )
+        if not isinstance(decay_strategy, PheromoneDecay):
+            raise TypeError(
+                f"decay_strategy debe ser PheromoneDecay, recibido: {type(decay_strategy).__name__}"
+            )
+
         self._deposits: Dict[HexCoord, Dict[PheromoneType, PheromoneDeposit]] = defaultdict(dict)
         self._decay_strategy = decay_strategy
-        self._max_intensity = max_intensity
-        self._evaporation_interval = evaporation_interval
+        self._max_intensity = float(max_intensity)
+        self._evaporation_interval = float(evaporation_interval)
         self._last_evaporation = time.time()
         self._lock = threading.RLock()
     
@@ -347,7 +363,17 @@ class PheromoneTrail:
         """
         diffusion_rate = diffusion_rate if diffusion_rate is not None else self.DEFAULT_DIFFUSION_RATE
         threshold = threshold if threshold is not None else self.DEFAULT_DIFFUSE_THRESHOLD
-        if diffusion_rate <= 0 or diffusion_rate >= 1:
+        # Phase 1 fix (B3): rangos inválidos ahora elevan ValueError en lugar de
+        # retornar 0 silenciosamente. Permitir 0 explícito (no-op) sin error.
+        if not 0.0 <= diffusion_rate < 1.0:
+            raise ValueError(
+                f"diffusion_rate debe estar en [0, 1), recibido: {diffusion_rate!r}"
+            )
+        if threshold < 0.0:
+            raise ValueError(
+                f"threshold debe ser >= 0, recibido: {threshold!r}"
+            )
+        if diffusion_rate == 0.0:
             return 0
         spread_per_neighbor = diffusion_rate / 6.0
         with self._lock:

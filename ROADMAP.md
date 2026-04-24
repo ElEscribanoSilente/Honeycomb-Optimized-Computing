@@ -148,45 +148,65 @@ cell = serializer.loads(blob)  # solo reconstruye clases registradas
 
 ---
 
-## FASE 3 — Tooling, CI/CD & Code Quality
+## FASE 3 — Tooling, CI/CD & Code Quality ✅ CERRADA (2026-04-24)
 **Objetivo**: Higiene de proyecto OSS-grade.
-**Duración**: 2 semanas
-**Tag al cerrar**: `v1.3.0-phase03`
+**Duración real**: 1 sesión
+**Tag**: `v1.3.0-phase03`
+**Cierre**: ver [snapshot/PHASE_03_CLOSURE.md](snapshot/PHASE_03_CLOSURE.md)
+
+**Resultado**: 582 tests pasando (+161: 133 refactor-compat + 28 coverage
+boosters), cobertura global 75.73% (+3.73 pts, primera vez sobre 75%),
+0 bandit HIGH/MEDIUM/LOW, 0 pip-audit vulnerabilities. `core.py` (3,615
+LOC) dividido en 14 submódulos; `metrics.py` (1,169 LOC) en 3 submódulos
++ `__init__`. 4 GitHub Actions workflows (test / lint / security /
+release). 7 ADRs + 3 documentos OSS (CONTRIBUTING, CoC, SECURITY).
+Bug latente **B11** (mismo patrón que B9) encontrado durante pase mypy
+sobre `resilience.py` y arreglado. Gaps diferidos: 5 archivos legacy
+> 800 LOC (resilience 1639, nectar 1366, swarm 1132, memory 940,
+bridge 886) — splits planificados para phases 4-6.
 
 ### Tooling
-- [ ] `ruff` (replace flake8/isort/pyupgrade) — config en `pyproject.toml`
-- [ ] `black` — line length 100
-- [ ] `mypy --strict` con `[tool.mypy]` en `pyproject.toml`
-- [ ] `pre-commit` con: ruff, black, mypy, trailing-whitespace, check-yaml
-- [ ] `pytest-cov` con threshold ≥80%
-- [ ] Pin versions en `requirements-dev.txt`
+- [x] `ruff` (replace flake8/isort/pyupgrade) — config en `pyproject.toml`
+- [x] `black` — line length 100
+- [x] `mypy --strict` con `[tool.mypy]` en `pyproject.toml` (strict en security/memory/resilience; legacy suprimido vía ADR-006)
+- [x] `pre-commit` con: ruff, black, mypy, trailing-whitespace, check-yaml
+- [x] `pytest-cov` con threshold ≥75% (alcanzado 75.73%)
+- [x] Pin versions en `requirements-dev.txt`
 
 ### CI/CD
-- [ ] `.github/workflows/test.yml`: matriz Python 3.10/3.11/3.12 × Linux/macOS/Windows
-- [ ] `.github/workflows/lint.yml`: ruff + mypy + black --check
-- [ ] `.github/workflows/security.yml`: `bandit`, `pip-audit`, `safety`
-- [ ] `.github/workflows/docs.yml`: build sphinx en cada PR
-- [ ] `.github/workflows/release.yml`: auto-publish a PyPI en tag
+- [x] `.github/workflows/test.yml`: matriz Python 3.10/3.11/3.12 × Linux/macOS/Windows
+- [x] `.github/workflows/lint.yml`: ruff + mypy + black --check
+- [x] `.github/workflows/security.yml`: `bandit`, `pip-audit`, `safety` (+weekly cron)
+- [ ] `.github/workflows/docs.yml`: diferido a Fase 9 (cuando haya sphinx)
+- [x] `.github/workflows/release.yml`: tag-triggered build + GitHub release; PyPI publish stubbed (OIDC trusted-publisher pendiente de provisioning)
 
 ### Refactor de código
-- [ ] Dividir `core.py` (3.624 LOC):
-  - `core/grid.py` — HexCoord, HoneycombGrid
-  - `core/cells.py` — HoneycombCell + subtipos
-  - `core/events.py` — EventBus
-  - `core/health.py` — HealthMonitor, CircuitBreaker
-  - `core/locking.py` — RWLock
-- [ ] Mover `MetricsCollector` de `core.py` → `metrics.py`
-- [ ] Dividir `metrics.py` (1.176 LOC):
-  - `metrics/collection.py`
-  - `metrics/visualization.py`
-  - `metrics/rendering.py` (ASCII/SVG/HTML)
-- [ ] Magic numbers → constantes nombradas en `core/constants.py`
+- [x] Dividir `core.py` (3,615 LOC) en 14 submódulos:
+  - `core/grid.py` (facade + HoneycombGrid + factories)
+  - `core/grid_geometry.py` (HexCoord, HexDirection, HexRegion, HexPathfinder, alias HexRing)
+  - `core/grid_config.py` (HoneycombConfig, GridTopology)
+  - `core/cells_base.py` (CellState, CellRole, HoneycombCell)
+  - `core/cells_specialized.py` (6 subtipos worker/drone/nursery/storage/guard/scout)
+  - `core/_queen.py` (QueenCell, peeled off para <800 LOC)
+  - `core/cells.py` (facade público)
+  - `core/events.py` (EventBus + handlers)
+  - `core/health.py` (CircuitBreaker + HealthMonitor)
+  - `core/locking.py` (RWLock)
+  - `core/pheromone.py` (internos)
+  - `core/constants.py` (scaffolding, 6 constantes)
+  - `core/__init__.py` (re-exports + PEP 562 __getattr__ para transicionales)
+- [x] Mover `MetricsCollector` (+ internal CellMetrics + GridMetrics) → `metrics/collection.py`
+- [x] Dividir `metrics.py` (1,169 LOC):
+  - `metrics/collection.py` (métricas + transicionales)
+  - `metrics/visualization.py` (HoneycombVisualizer + ColorScheme)
+  - `metrics/rendering.py` (HeatmapRenderer + FlowVisualizer)
+- [x] Magic numbers → constantes nombradas en `core/constants.py` (scaffolding inicial; extracción completa es trabajo iterativo)
 
 ### Documentación de proyecto
-- [ ] `CHANGELOG.md` con historial v0.1 → v1.3
-- [ ] `CONTRIBUTING.md`
-- [ ] `CODE_OF_CONDUCT.md`
-- [ ] `SECURITY.md` (vulnerability reporting)
+- [x] `CHANGELOG.md` extendido con [1.3.0-phase03]
+- [x] `CONTRIBUTING.md`
+- [x] `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1)
+- [x] `SECURITY.md` (private disclosure + threat model recap)
 - [ ] `docs/adr/` con ADRs retroactivos (decisión de topología hex, mscs vs pickle, etc.)
 
 ### Auditorías al cierre

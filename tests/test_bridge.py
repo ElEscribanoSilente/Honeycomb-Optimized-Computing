@@ -1,14 +1,15 @@
 """Tests para el módulo bridge de HOC (integración CAMV)."""
+
 import pytest
 
-from hoc.core import HexCoord, HoneycombGrid, HoneycombConfig
 from hoc.bridge import (
-    HexToCartesian,
+    CAMVHoneycombBridge,
     CartesianToHex,
     CellToVCoreMapper,
-    CAMVHoneycombBridge,
+    HexToCartesian,
     VentHoneycombAdapter,
 )
+from hoc.core import HexCoord, HoneycombConfig, HoneycombGrid
 
 
 class TestHexToCartesian:

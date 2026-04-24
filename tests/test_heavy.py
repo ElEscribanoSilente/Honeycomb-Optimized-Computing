@@ -4,14 +4,16 @@ Tests pesados: cargas de trabajo intensivas y estrés del SwarmScheduler.
 Ejecutan tareas CPU-intensivas (render, matrices, simulación, hash, Monte Carlo)
 y comprueban que el scheduler completa correctamente.
 """
+
 from __future__ import annotations
 
 import pytest
-from hoc import HoneycombGrid, HoneycombConfig, NectarFlow, SwarmScheduler
+
+from hoc import HoneycombConfig, HoneycombGrid, NectarFlow, SwarmScheduler
 from hoc.swarm import TaskPriority, TaskState
 
-
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def grid_radius_2():
@@ -29,6 +31,7 @@ def scheduler(grid_radius_2):
 
 # ─── Tests por tipo de carga ─────────────────────────────────────────────────
 
+
 class TestHeavyByType:
     """Tests pesados por tipo de carga (una tarea por tipo)."""
 
@@ -42,6 +45,7 @@ class TestHeavyByType:
     def test_heavy_render_only(self, scheduler):
         """Varias tareas de render 3D."""
         from benchmarks.workload_heavy import workload_render_3d
+
         tasks = []
         for i in range(3):
             t = scheduler.submit_task(
@@ -57,6 +61,7 @@ class TestHeavyByType:
     def test_heavy_matrix_only(self, scheduler):
         """Varias tareas de multiplicación de matrices."""
         from benchmarks.workload_heavy import workload_matrix_mult
+
         tasks = []
         for i in range(4):
             t = scheduler.submit_task(
@@ -72,6 +77,7 @@ class TestHeavyByType:
     def test_heavy_simulation_only(self, scheduler):
         """Varias tareas de simulación."""
         from benchmarks.workload_heavy import workload_simulation_steps
+
         tasks = []
         for i in range(4):
             t = scheduler.submit_task(
@@ -87,6 +93,7 @@ class TestHeavyByType:
     def test_heavy_hash_only(self, scheduler):
         """Varias tareas de trabajo tipo hash."""
         from benchmarks.workload_heavy import workload_hash_like
+
         tasks = []
         for i in range(4):
             t = scheduler.submit_task(
@@ -102,6 +109,7 @@ class TestHeavyByType:
     def test_heavy_monte_carlo_only(self, scheduler):
         """Varias tareas Monte Carlo."""
         from benchmarks.workload_heavy import workload_monte_carlo
+
         tasks = []
         for i in range(3):
             t = scheduler.submit_task(
@@ -117,18 +125,20 @@ class TestHeavyByType:
 
 # ─── Test mixto ─────────────────────────────────────────────────────────────
 
+
 class TestHeavyMixed:
     """Tests con mezcla de todos los tipos de carga."""
 
     def test_heavy_mixed_five_types(self, scheduler):
         """Una tarea de cada tipo: render, matrix, simulation, hash, monte_carlo."""
         from benchmarks.workload_heavy import (
-            workload_render_3d,
-            workload_matrix_mult,
-            workload_simulation_steps,
             workload_hash_like,
+            workload_matrix_mult,
             workload_monte_carlo,
+            workload_render_3d,
+            workload_simulation_steps,
         )
+
         payloads = [
             {"execute": lambda: workload_render_3d(48, 48, 3, 2)},
             {"execute": lambda: workload_matrix_mult(128, 2)},
@@ -155,6 +165,7 @@ class TestHeavyMixed:
     def test_heavy_mixed_uses_benchmark_runner(self):
         """Usa el runner del benchmark mixto con pocas tareas."""
         from benchmarks.bench_heavy_mixed import run_heavy_mixed_benchmark
+
         result = run_heavy_mixed_benchmark(
             tasks_per_type={
                 "render_3d": 1,
@@ -172,12 +183,14 @@ class TestHeavyMixed:
 
 # ─── Tests de estrés ─────────────────────────────────────────────────────────
 
+
 class TestHeavyStress:
     """Tests de estrés: muchas tareas o cargas más grandes."""
 
     def test_stress_many_small_tasks(self):
         """Muchas tareas ligeras (hash corto) para saturar el scheduler."""
         from benchmarks.workload_heavy import workload_hash_like
+
         config = HoneycombConfig(radius=2)
         grid = HoneycombGrid(config)
         nectar = NectarFlow(grid)
@@ -203,6 +216,7 @@ class TestHeavyStress:
         """Varias tareas mixtas de carga media-alta."""
         from benchmarks.bench_heavy_mixed import run_heavy_mixed_benchmark
         from benchmarks.workload_heavy import WORKLOADS
+
         # 1 de cada tipo, grid pequeño
         result = run_heavy_mixed_benchmark(
             tasks_per_type={k: 1 for k in WORKLOADS},
@@ -215,17 +229,23 @@ class TestHeavyStress:
 
 # ─── Ejecución directa (sin pytest) ─────────────────────────────────────────
 
+
 def _run_heavy_tests_direct() -> bool:
     """Ejecuta los tests pesados sin pytest. Útil si pytest falla por plugins."""
     from benchmarks.bench_heavy_mixed import run_heavy_mixed_benchmark
 
     ok = True
     # Test mixto rápido: solo tipos ligeros (1 de cada uno, sin matrix_svd/render grande)
-    print("Test: mixed light (render_3d, matrix_mult, simulation, hash_work, monte_carlo) 1 each...")
+    print(
+        "Test: mixed light (render_3d, matrix_mult, simulation, hash_work, monte_carlo) 1 each..."
+    )
     result = run_heavy_mixed_benchmark(
         tasks_per_type={
-            "render_3d": 1, "matrix_mult": 1, "simulation": 1,
-            "hash_work": 1, "monte_carlo": 1,
+            "render_3d": 1,
+            "matrix_mult": 1,
+            "simulation": 1,
+            "hash_work": 1,
+            "monte_carlo": 1,
         },
         grid_radius=2,
         max_ticks=1000,
@@ -254,6 +274,7 @@ def _run_heavy_tests_direct() -> bool:
 if __name__ == "__main__":
     import sys
     from pathlib import Path
+
     root = Path(__file__).resolve().parent.parent
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))

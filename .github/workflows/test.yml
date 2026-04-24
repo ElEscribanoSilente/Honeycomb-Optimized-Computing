@@ -1,0 +1,68 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, "phase/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest — ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    # Check out into a directory named `hoc` (a valid Python package name).
+    # The default checkout path is the repo name "Honeycomb-Optimized-Computing"
+    # whose hyphens break pytest/mypy filesystem-based package inference,
+    # because pyproject declares `package-dir = {hoc = "."}` which makes the
+    # checkout dir itself act as the package root.
+    defaults:
+      run:
+        working-directory: hoc
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install mscs
+
+      - name: Verify imports
+        run: python -c "from hoc import HoneycombGrid, HexCoord, HiveMetrics; print('OK')"
+
+      - name: Run tests (excluding heavy benchmarks)
+        run: python -m pytest tests/ --ignore=tests/test_heavy.py --cov --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./hoc/coverage.xml
+          fail_ci_if_error: false
+          verbose: false
+        # Token optional for public repos. Uncomment + set CODECOV_TOKEN secret
+        # if coverage uploads start failing with rate-limit errors.
+        # env:
+        #   CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

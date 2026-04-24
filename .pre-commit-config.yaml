@@ -1,0 +1,55 @@
+# HOC pre-commit config (Phase 3, 2026-04-23).
+# Install: pip install pre-commit==4.0.1 && pre-commit install
+# Run on all files: pre-commit run --all-files
+#
+# Hooks are ordered cheapest → most expensive so fast failures bail early.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '^(snapshot/|\.hypothesis/|.*\.patch$)'
+      - id: end-of-file-fixer
+        exclude: '^(snapshot/|\.hypothesis/|.*\.patch$|render_esferas\.png$)'
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: '^(snapshot/bandit_.*\.json)$'
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: ['--fix', '--exit-non-zero-on-fix']
+      - id: ruff-format
+
+  - repo: https://github.com/psf/black
+    rev: 26.3.1
+    hooks:
+      - id: black
+        language_version: python3
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        additional_dependencies: ['numpy>=1.21.0']
+        # Only type-check files that changed. Legacy modules are soft-typed
+        # via pyproject.toml overrides; new code still gets strict.
+        args: ['--config-file=pyproject.toml']
+        exclude: '^(tests/|benchmarks/|snapshot/|docs/)'
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.0
+    hooks:
+      - id: bandit
+        args: ['-c', 'pyproject.toml', '-r', '.']
+        additional_dependencies: ['bandit[toml]']
+        exclude: '^(tests/|benchmarks/|snapshot/)'

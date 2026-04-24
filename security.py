@@ -44,8 +44,9 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Callable, Optional, Set, TypeVar, Union
+from typing import Any, TypeVar, cast
 
 import mscs
 
@@ -60,11 +61,11 @@ F = TypeVar("F", bound=Callable[..., Any])
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _MIN_KEY_BYTES: int = 16
-_HMAC_KEY: Optional[bytes] = None
+_HMAC_KEY: bytes | None = None
 _HMAC_KEY_LOCK = threading.Lock()
 
 
-def _load_env_key() -> Optional[bytes]:
+def _load_env_key() -> bytes | None:
     """Lee HOC_HMAC_KEY de entorno. Intenta hex, si falla trata como utf-8."""
     env = os.environ.get("HOC_HMAC_KEY")
     if not env:
@@ -75,8 +76,7 @@ def _load_env_key() -> Optional[bytes]:
         raw = env.encode("utf-8")
     if len(raw) < _MIN_KEY_BYTES:
         raise ValueError(
-            f"HOC_HMAC_KEY demasiado corta: {len(raw)} bytes, "
-            f"mínimo {_MIN_KEY_BYTES}"
+            f"HOC_HMAC_KEY demasiado corta: {len(raw)} bytes, " f"mínimo {_MIN_KEY_BYTES}"
         )
     return raw
 
@@ -114,9 +114,7 @@ def set_hmac_key(key: bytes) -> None:
     if not isinstance(key, (bytes, bytearray)):
         raise TypeError("hmac key debe ser bytes")
     if len(key) < _MIN_KEY_BYTES:
-        raise ValueError(
-            f"hmac key demasiado corta: {len(key)} bytes, mínimo {_MIN_KEY_BYTES}"
-        )
+        raise ValueError(f"hmac key demasiado corta: {len(key)} bytes, mínimo {_MIN_KEY_BYTES}")
     global _HMAC_KEY
     with _HMAC_KEY_LOCK:
         _HMAC_KEY = bytes(key)
@@ -135,7 +133,7 @@ def reset_hmac_key() -> None:
 
 MSCSecurityError = mscs.MSCSecurityError
 
-_REGISTERED: Set[type] = set()
+_REGISTERED: set[type] = set()
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -173,8 +171,8 @@ def serialize(obj: Any, *, sign: bool = True) -> bytes:
               locales cuyo contenido nunca se acepta como input).
     """
     if sign:
-        return mscs.dumps(obj, hmac_key=get_hmac_key())
-    return mscs.dumps(obj)
+        return cast(bytes, mscs.dumps(obj, hmac_key=get_hmac_key()))
+    return cast(bytes, mscs.dumps(obj))
 
 
 def deserialize(data: bytes, *, verify: bool = True, strict: bool = True) -> Any:
@@ -196,12 +194,13 @@ def deserialize(data: bytes, *, verify: bool = True, strict: bool = True) -> Any
 # HMAC MESSAGE SIGNING (para DanceMessage, RoyalMessage, PheromoneDeposit)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def sign_payload(payload: bytes, key: Optional[bytes] = None) -> bytes:
+
+def sign_payload(payload: bytes, key: bytes | None = None) -> bytes:
     """Genera tag HMAC-SHA256 sobre ``payload`` (32 bytes)."""
     return _hmac.new(key or get_hmac_key(), payload, hashlib.sha256).digest()
 
 
-def verify_signature(payload: bytes, tag: bytes, key: Optional[bytes] = None) -> bool:
+def verify_signature(payload: bytes, tag: bytes, key: bytes | None = None) -> bool:
     """Verifica tag HMAC en tiempo constante (resistente a timing attacks)."""
     if not isinstance(tag, (bytes, bytearray)) or len(tag) != 32:
         return False
@@ -221,12 +220,12 @@ def secure_random() -> float:
     return _system_rng.random()
 
 
-def secure_choice(seq):
+def secure_choice(seq: Sequence[T]) -> T:
     """Elemento aleatorio de ``seq`` usando CSPRNG. Lanza IndexError si vacío."""
     return _system_rng.choice(seq)
 
 
-def secure_shuffle(lst: list) -> list:
+def secure_shuffle(lst: list[T]) -> list[T]:
     """Shuffle in-place de ``lst`` usando CSPRNG. Retorna la misma lista."""
     _system_rng.shuffle(lst)
     return lst
@@ -236,11 +235,12 @@ def secure_shuffle(lst: list) -> list:
 # PATH VALIDATION (contra path traversal)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class PathTraversalError(ValueError):
     """Intento de escapar de un directorio base detectado."""
 
 
-def safe_join(base: Union[str, Path], relative: str) -> Path:
+def safe_join(base: str | Path, relative: str) -> Path:
     """
     Resuelve ``base / relative`` asegurando que el resultado esté contenido
     en ``base``. Rechaza `..`, symlinks fuera, rutas absolutas, null bytes.
@@ -265,16 +265,17 @@ def safe_join(base: Union[str, Path], relative: str) -> Path:
 
     try:
         candidate.relative_to(base_resolved)
-    except ValueError:
+    except ValueError as exc:
         raise PathTraversalError(
             f"path traversal detectado: {relative!r} escapa de {str(base_resolved)!r}"
-        )
+        ) from exc
     return candidate
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # RATE LIMITING (token bucket)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class RateLimitExceeded(RuntimeError):
     """Excepción lanzada cuando se supera el ritmo permitido."""
@@ -288,7 +289,7 @@ class RateLimiter:
     - ``burst``: capacidad máxima del bucket (permite ráfagas cortas).
     """
 
-    def __init__(self, per_second: float, burst: Optional[int] = None):
+    def __init__(self, per_second: float, burst: int | None = None):
         if per_second <= 0:
             raise ValueError(f"per_second debe ser > 0, recibido: {per_second!r}")
         self.rate: float = float(per_second)
@@ -313,17 +314,17 @@ class RateLimiter:
 
     def __call__(self, fn: F) -> F:
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             if not self.try_acquire():
                 raise RateLimitExceeded(
-                    f"{fn.__name__} rate limit exceeded "
-                    f"({self.rate}/s, burst={self.burst})"
+                    f"{fn.__name__} rate limit exceeded " f"({self.rate}/s, burst={self.burst})"
                 )
             return fn(*args, **kwargs)
+
         return wrapper  # type: ignore[return-value]
 
 
-def rate_limit(per_second: float, burst: Optional[int] = None) -> Callable[[F], F]:
+def rate_limit(per_second: float, burst: int | None = None) -> Callable[[F], F]:
     """Decorator factory. Cada decorador tiene su propio bucket."""
     limiter = RateLimiter(per_second, burst)
 
@@ -336,6 +337,7 @@ def rate_limit(per_second: float, burst: Optional[int] = None) -> Callable[[F], 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOG SANITIZATION
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def _is_debug_mode() -> bool:
     """Lee ``HOC_DEBUG`` de entorno. Default: False (producción)."""

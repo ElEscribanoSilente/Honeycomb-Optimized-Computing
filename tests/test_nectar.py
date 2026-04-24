@@ -1,18 +1,17 @@
 """Tests para el módulo nectar de HOC (feromonas, Waggle Dance, Royal Jelly)."""
+
 import pytest
 
-from hoc.core import HexCoord, HexDirection, HoneycombGrid
+from hoc.core import HexCoord, HoneycombGrid
 from hoc.nectar import (
+    DanceDirection,
+    DanceMessage,
+    NectarFlow,
     PheromoneTrail,
     PheromoneType,
-    PheromoneDecay,
-    PheromoneDeposit,
-    WaggleDance,
-    DanceMessage,
-    DanceDirection,
-    NectarFlow,
-    RoyalJelly,
     RoyalCommand,
+    RoyalJelly,
+    WaggleDance,
 )
 
 
@@ -126,6 +125,7 @@ class TestNectarFlow:
     def grid(self):
         """Grid pequeño para tests."""
         from hoc.core import HoneycombConfig
+
         config = HoneycombConfig(radius=1)
         return HoneycombGrid(config)
 

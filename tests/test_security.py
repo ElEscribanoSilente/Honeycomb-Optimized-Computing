@@ -15,46 +15,46 @@ cubre una de las cinco áreas obligatorias del roadmap:
 Además cubre el HMAC round-trip global, el CSPRNG replacement y rate
 limiting para completar la cobertura del módulo ``security``.
 """
+
 from __future__ import annotations
 
 import os
 import pickle
+
 import pytest
 
 from hoc.core import HexCoord, HoneycombConfig, HoneycombGrid
-from hoc.memory import HoneyArchive, MemoryConfig, CombStorage, HiveMemory
+from hoc.memory import CombStorage, HiveMemory, HoneyArchive, MemoryConfig
 from hoc.nectar import (
-    DanceMessage,
     DanceDirection,
+    DanceMessage,
     NectarFlow,
-    PheromoneDeposit,
     PheromoneTrail,
     PheromoneType,
     RoyalCommand,
     RoyalJelly,
-    RoyalMessage,
 )
 from hoc.resilience import QueenSuccession, ResilienceConfig, Vote
 from hoc.security import (
     MSCSecurityError,
     PathTraversalError,
-    RateLimitExceeded,
     RateLimiter,
+    RateLimitExceeded,
     deserialize,
     rate_limit,
     safe_join,
     secure_choice,
     secure_random,
-    set_hmac_key,
     serialize,
+    set_hmac_key,
     sign_payload,
     verify_signature,
 )
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Fixtures comunes
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.fixture(autouse=True)
 def fixed_hmac_key():
@@ -75,6 +75,7 @@ def tmp_grid():
 # 1. mscs rechaza payloads maliciosos
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class EvilReduce:
     """
     Clase que si fuera deserializada por ``pickle.loads`` ejecutaría
@@ -82,6 +83,7 @@ class EvilReduce:
     bytes que no son de su propio formato por construcción (no
     interpreta el opcode pickle en absoluto).
     """
+
     def __reduce__(self):
         return (os.system, ("echo pwned > /tmp/hoc_pwned",))
 
@@ -118,9 +120,12 @@ class TestMscsRejectsMalicious:
 
     def test_strict_registry_rejects_unregistered_class(self):
         """Una clase no registrada no puede ser reconstruida vía mscs loads."""
+
         class LocalOnly:
             pass
+
         import mscs
+
         # dumps funciona, pero loads strict debe rechazar sin register.
         raw = mscs.dumps(LocalOnly())
         with pytest.raises(MSCSecurityError):
@@ -142,6 +147,7 @@ class TestMscsRejectsMalicious:
 # 2. RoyalCommand — alta prioridad solo por Queen
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestRoyalCommandQueenOnly:
     """
     Fase 2.2 — Solo la :class:`QueenCell` puede emitir comandos con
@@ -155,17 +161,13 @@ class TestRoyalCommandQueenOnly:
         drone = HexCoord(2, -1)  # cualquier celda != queen
         jelly = RoyalJelly(queen)
         with pytest.raises(PermissionError):
-            jelly.issue_command(
-                RoyalCommand.EMERGENCY, priority=10, issuer=drone
-            )
+            jelly.issue_command(RoyalCommand.EMERGENCY, priority=10, issuer=drone)
 
     def test_queen_can_issue_priority_10(self):
         """Queen legítima → comando aceptado y firmado."""
         queen = HexCoord.origin()
         jelly = RoyalJelly(queen)
-        msg = jelly.issue_command(
-            RoyalCommand.EMERGENCY, priority=10, issuer=queen
-        )
+        msg = jelly.issue_command(RoyalCommand.EMERGENCY, priority=10, issuer=queen)
         assert msg.priority == 10
         assert msg.issuer == queen
         assert msg.signature is not None
@@ -192,13 +194,9 @@ class TestRoyalCommandQueenOnly:
         jelly.update_queen_coord(new_queen)
         # La vieja reina ya no puede emitir high priority.
         with pytest.raises(PermissionError):
-            jelly.issue_command(
-                RoyalCommand.EMERGENCY, priority=10, issuer=old_queen
-            )
+            jelly.issue_command(RoyalCommand.EMERGENCY, priority=10, issuer=old_queen)
         # Pero la nueva sí.
-        msg = jelly.issue_command(
-            RoyalCommand.EMERGENCY, priority=10, issuer=new_queen
-        )
+        msg = jelly.issue_command(RoyalCommand.EMERGENCY, priority=10, issuer=new_queen)
         assert msg.issuer == new_queen
 
     def test_forged_royal_message_fails_verify(self):
@@ -206,8 +204,7 @@ class TestRoyalCommandQueenOnly:
         queen = HexCoord.origin()
         jelly = RoyalJelly(queen)
         msg = jelly.issue_command(
-            RoyalCommand.EVACUATE, priority=9, issuer=queen,
-            params={"radius": 3}
+            RoyalCommand.EVACUATE, priority=9, issuer=queen, params={"radius": 3}
         )
         assert msg.verify()
         # Atacante modifica params para ampliar el radio de evacuación.
@@ -218,6 +215,7 @@ class TestRoyalCommandQueenOnly:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. Quorum con votos firmados y rechazo de duplicados
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class TestQuorumSignedVotes:
     """
@@ -300,6 +298,7 @@ class TestQuorumSignedVotes:
 # 4. PheromoneTrail bounded — DoS mitigado
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestPheromoneBoundedDoS:
     """
     Fase 2.4 — ``PheromoneTrail`` acota memoria incluso bajo flood.
@@ -356,6 +355,7 @@ class TestPheromoneBoundedDoS:
 # 5. Path traversal en HoneyArchive
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestHoneyArchivePathTraversal:
     """
     Fase 2.4 — ``HoneyArchive.archive`` rechaza claves que apuntan fuera
@@ -395,6 +395,7 @@ class TestHoneyArchivePathTraversal:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Primitivas transversales: HMAC, CSPRNG, rate limiting
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class TestHmacPrimitives:
     def test_sign_verify_round_trip(self):
@@ -445,12 +446,14 @@ class TestRateLimiter:
         @rate_limit(per_second=1, burst=1)
         def op():
             return 42
+
         assert op() == 42
         with pytest.raises(RateLimitExceeded):
             op()
 
     def test_refills_after_time(self):
         import time
+
         limiter = RateLimiter(per_second=100, burst=1)
         assert limiter.try_acquire()
         assert not limiter.try_acquire()
@@ -459,8 +462,9 @@ class TestRateLimiter:
 
     def test_submit_task_rate_limited(self, tmp_grid):
         """SwarmScheduler.submit_task respeta su limitador."""
-        from hoc.swarm import SwarmScheduler, SwarmConfig
         from hoc.nectar import NectarFlow
+        from hoc.swarm import SwarmConfig, SwarmScheduler
+
         nectar = NectarFlow(tmp_grid)
         cfg = SwarmConfig(submit_rate_per_second=1, submit_rate_burst=1)
         sched = SwarmScheduler(tmp_grid, nectar, cfg)
@@ -472,6 +476,7 @@ class TestRateLimiter:
 # ═══════════════════════════════════════════════════════════════════════════════
 # DanceMessage signing
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class TestDanceSigning:
     def test_dance_auto_signed_by_nectar(self, tmp_grid):
@@ -488,7 +493,7 @@ class TestDanceSigning:
     def test_dance_propagate_preserves_signature(self, tmp_grid):
         """Propagación cambia quality/ttl pero la firma original sigue válida."""
         nectar = NectarFlow(tmp_grid)
-        dance = nectar.start_dance(
+        nectar.start_dance(
             dancer=HexCoord.origin(),
             direction=DanceDirection.RIGHT,
             distance=2,
@@ -518,6 +523,7 @@ class TestDanceSigning:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Integration: HiveMemory end-to-end con HMAC
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class TestHiveMemoryIntegration:
     def test_put_get_round_trip(self, tmp_grid):

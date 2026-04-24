@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hoc"
-version = "1.0.0"
+version = "1.3.0"
 description = "HOC - Honeycomb Optimized Computing: Computación Bio-Inspirada con Topología Hexagonal"
 readme = "README.md"
 license = {text = "MIT"}
@@ -29,31 +29,199 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-benchmark>=4.0",
-    "pytest-cov>=4.0",
+    # pytest 8.4.1 / black 25.1.0 hit GHSA-6w46-j5rx-g56g / GHSA-3936-cmfr-pm3m —
+    # bumped to the fix versions on 2026-04-24 after pip-audit surfaced them in CI.
+    "pytest==9.0.3",
+    "pytest-benchmark==5.1.0",
+    "pytest-cov==6.1.1",
+    "pytest-mock==3.15.1",
+    "pytest-timeout==2.4.0",
+    "hypothesis==6.151.11",
+    "ruff==0.8.6",
+    "black==26.3.1",
+    "mypy==1.14.1",
+    "pre-commit==4.0.1",
+    "bandit==1.8.0",
+    "pip-audit==2.9.0",
+    "radon==6.0.1",
 ]
 
 [project.urls]
-"Documentation" = "https://github.com/your-org/hoc"
-"Repository" = "https://github.com/your-org/hoc"
+"Documentation" = "https://github.com/esraderey/Honeycomb-Optimized-Computing"
+"Repository" = "https://github.com/esraderey/Honeycomb-Optimized-Computing"
 
 [tool.setuptools]
 package-dir = {hoc = "."}
-packages = ["hoc"]
+packages = ["hoc", "hoc.core", "hoc.metrics"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "bench_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+# --import-mode=importlib avoids pytest walking into the repo-root __init__.py
+# during collection. Since `package-dir = {hoc = "."}` makes the repo root
+# ALSO the hoc package root, the legacy "prepend" import mode tries to import
+# __init__.py as a loose module (no parent package) and fails with
+# "attempted relative import with no known parent package".
+addopts = "-v --tb=short --import-mode=importlib"
+pythonpath = ["."]
+# Don't descend into these dirs during collection. Prevents pytest from
+# discovering the package source and trying to treat files there as tests.
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "docs", ".git", "__pycache__"]
 
 [tool.coverage.run]
 source = ["."]
-omit = ["tests/*", "benchmarks/*", "__pycache__/*"]
+omit = [
+    "tests/*",
+    "benchmarks/*",
+    "__pycache__/*",
+    "snapshot/*",
+    "docs/*",
+]
 
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
 ]
+fail_under = 75
+show_missing = true
+skip_covered = false
+
+# ─── Ruff (lint + import sort) ────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "snapshot",
+    "benchmarks",
+    ".hypothesis",
+    ".pytest_cache",
+    "hoc.egg-info",
+]
+
+[tool.ruff.lint]
+extend-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+extend-ignore = [
+    "E501",   # black handles line length
+    "B008",   # function calls in defaults — common pattern in configs
+    "SIM108", # ternary vs if-else — readability judgment
+    "UP038",  # PEP604 in isinstance — runtime perf regression on 3.10
+    "RUF022", # __all__ is organized by module section (Core, Nectar Flow, …) not alphabetically
+    "RUF002", # ambiguous unicode in docstrings (× for multiplication sign is correct in ES math text)
+    "RUF003", # same, in comments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "SIM105"]   # allow assert False, allow bare try/except/pass in tests
+"__init__.py" = ["F401", "F403"] # re-exports are expected
+"tests/test_property.py" = ["B002"] # -(-a) is double negation, not --a (ruff false positive)
+
+[tool.ruff.lint.isort]
+known-first-party = ["hoc"]
+combine-as-imports = true
+
+# ─── Black ────────────────────────────────────────────────────────────────────
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+extend-exclude = '''
+(
+    snapshot/
+  | benchmarks/
+  | \.hypothesis/
+  | \.pytest_cache/
+  | hoc\.egg-info/
+)
+'''
+
+# ─── mypy ─────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+# Follow imports silently — avoids bailing out on unrelated broken third-party
+# stubs in site-packages (e.g. rdkit-stubs in local dev envs). Individual
+# missing-import errors are silenced via [[tool.mypy.overrides]] entries below.
+follow_imports = "silent"
+# Skip stub discovery in site-packages: avoids cascading failures when an
+# unrelated PEP 561 stubs package has broken syntax (rdkit-stubs on local dev).
+# All dependencies we actually use (numpy, mscs) are listed in overrides with
+# ignore_missing_imports, so this doesn't regress type quality for HOC itself.
+no_site_packages = true
+# NOTE: mypy (and pytest) infer a package name from the cwd's filesystem name
+# because the repo root has an `__init__.py` (declared as `hoc` via pyproject
+# `package-dir = {hoc = "."}`). Inference fails if the directory name has
+# hyphens (e.g. GitHub's default checkout path `Honeycomb-Optimized-Computing`).
+# Mitigation is in .github/workflows/*.yml: every job checks out into a
+# subdirectory named `hoc`, which is always a valid Python identifier.
+# Contributors working locally are fine as long as their checkout directory
+# name is a valid identifier (D:\HOC, ~/hoc, etc.).
+exclude = [
+    "tests/",
+    "benchmarks/",
+    "snapshot/",
+    "docs/",
+    "build/",
+    "hoc\\.egg-info/",
+    # Phase 3 legacy suppression — these files pre-date strict typing.
+    # Future phases re-enable per-module by removing from exclude. See ADR-006.
+    "^bridge\\.py$",
+    # core.py was split into the core/ subpackage in Phase 3.3 — the legacy
+    # suppression follows the code to its new home. Will be tightened
+    # per-submodule as those are annotated. See ADR-006.
+    "^core/",
+    # metrics.py was split into the metrics/ subpackage in Phase 3.3 (cont.)
+    # — the legacy suppression follows the code to its new home.
+    "^metrics/",
+    "^nectar\\.py$",
+    "^swarm\\.py$",
+]
+
+# External untyped deps — ignore missing stubs.
+[[tool.mypy.overrides]]
+module = ["mscs", "mscs.*", "hypothesis", "hypothesis.*", "numpy.*", "radon.*"]
+ignore_missing_imports = true
+
+# Phase 3: strict mypy is the target, but core.py, metrics.py, bridge.py,
+# nectar.py, swarm.py were authored before the typing regime. Relax strictness
+# on legacy modules so Phase 3 can close without blocking on ~6,500 LOC of
+# retroactive annotations. Future phases tighten module-by-module.
+#
+# Modules security.py, memory.py and resilience.py are explicitly NOT relaxed
+# because Phase 2 / Phase 3 added them (security.py) or annotated them
+# (memory.py, resilience.py). Strict mypy is enforced there as the canonical
+# baseline for future phases.
+[[tool.mypy.overrides]]
+module = [
+    "core",
+    "core.*",
+    "metrics",
+    "metrics.*",
+    "bridge",
+    "nectar",
+    "swarm",
+    "hoc.core",
+    "hoc.core.*",
+    "hoc.metrics",
+    "hoc.metrics.*",
+    "hoc.bridge",
+    "hoc.nectar",
+    "hoc.swarm",
+]
+# Full suppression for legacy modules during Phase 3. Future phases tighten
+# per-module by removing entries from this list (and then fixing the resulting
+# errors inline). See ADR-006.
+ignore_errors = true
+
+# ─── Bandit (config here for completeness; CLI call in CI uses these) ─────────
+[tool.bandit]
+exclude_dirs = ["tests", "benchmarks", "snapshot", "__pycache__", ".hypothesis"]
+skips = []

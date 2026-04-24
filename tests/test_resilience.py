@@ -8,6 +8,7 @@ Verifica los fixes:
 - B8: CombRepair._repair_neighbor_link ahora maneja KeyError/TypeError
   en details malformados sin crashear repair_issue para otros tipos.
 """
+
 import time
 
 import pytest
@@ -15,7 +16,6 @@ import pytest
 from hoc.core import (
     CellState,
     HexCoord,
-    HexDirection,
     HoneycombConfig,
     HoneycombGrid,
     QueenCell,
@@ -36,7 +36,6 @@ from hoc.resilience import (
     ResilienceConfig,
     SwarmRecovery,
 )
-
 
 # ───────────────────────────────────────────────────────────────────────────────
 # FIXTURES
@@ -122,7 +121,8 @@ class TestCellFailover:
         fo = CellFailover(grid_r2, default_config)
         # Buscar una worker no-queen
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         event = fo.handle_failure(worker_coord, FailureType.TIMEOUT)
@@ -133,7 +133,8 @@ class TestCellFailover:
     def test_failed_cell_added_to_set(self, grid_r2, default_config):
         fo = CellFailover(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         fo.handle_failure(worker_coord, FailureType.ERROR_THRESHOLD)
@@ -142,7 +143,8 @@ class TestCellFailover:
     def test_cooldown_prevents_repeated_failover(self, grid_r2, default_config):
         fo = CellFailover(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         first = fo.handle_failure(worker_coord, FailureType.TIMEOUT)
@@ -161,7 +163,8 @@ class TestCellFailover:
     def test_mark_recovered(self, grid_r2, default_config):
         fo = CellFailover(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         fo.handle_failure(worker_coord, FailureType.TIMEOUT)
@@ -186,14 +189,20 @@ class TestCellFailover:
     def test_get_stats(self, grid_r2, default_config):
         fo = CellFailover(grid_r2, default_config)
         stats = fo.get_stats()
-        for key in ("failed_cells", "total_failovers", "successful_failovers",
-                    "success_rate", "cells_in_cooldown"):
+        for key in (
+            "failed_cells",
+            "total_failovers",
+            "successful_failovers",
+            "success_rate",
+            "cells_in_cooldown",
+        ):
             assert key in stats
 
     def test_find_failover_target_returns_neighbor(self, grid_r2, default_config):
         fo = CellFailover(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         target = fo.find_failover_target(worker_coord)
@@ -335,7 +344,8 @@ class TestHexRedundancy:
 
     def test_init_custom_strategy(self, grid_r2, default_config):
         red = HexRedundancy(
-            grid_r2, default_config,
+            grid_r2,
+            default_config,
             strategy=HexRedundancy.Strategy.RING,
         )
         assert red.strategy == HexRedundancy.Strategy.RING
@@ -349,7 +359,8 @@ class TestHexRedundancy:
         red = HexRedundancy(grid_r2, default_config)
         # Encontrar una worker (no queen) con vecinos
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         replicas = red.setup_replication(worker_coord)
@@ -358,11 +369,13 @@ class TestHexRedundancy:
 
     def test_setup_replication_ring(self, grid_r2, default_config):
         red = HexRedundancy(
-            grid_r2, default_config,
+            grid_r2,
+            default_config,
             strategy=HexRedundancy.Strategy.RING,
         )
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         replicas = red.setup_replication(worker_coord)
@@ -370,11 +383,13 @@ class TestHexRedundancy:
 
     def test_setup_replication_quorum(self, grid_r2, default_config):
         red = HexRedundancy(
-            grid_r2, default_config,
+            grid_r2,
+            default_config,
             strategy=HexRedundancy.Strategy.QUORUM,
         )
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         replicas = red.setup_replication(worker_coord)
@@ -388,7 +403,8 @@ class TestHexRedundancy:
     def test_replicate_data_after_setup(self, grid_r2, default_config):
         red = HexRedundancy(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         replicas = red.setup_replication(worker_coord)
@@ -398,7 +414,8 @@ class TestHexRedundancy:
     def test_read_with_fallback_primary_alive(self, grid_r2, default_config):
         red = HexRedundancy(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         result = red.read_with_fallback(worker_coord)
@@ -408,7 +425,8 @@ class TestHexRedundancy:
     def test_read_with_fallback_primary_failed(self, grid_r2, default_config):
         red = HexRedundancy(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         red.setup_replication(worker_coord)
@@ -423,7 +441,8 @@ class TestHexRedundancy:
     def test_get_replicas(self, grid_r2, default_config):
         red = HexRedundancy(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         red.setup_replication(worker_coord)
@@ -481,7 +500,8 @@ class TestSwarmRecovery:
         rec = SwarmRecovery(grid_r2, default_config)
         # Marcar una celda no-queen como FAILED
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         grid_r2._cells[worker_coord].state = CellState.FAILED
@@ -499,7 +519,8 @@ class TestSwarmRecovery:
     def test_execute_recovery_plan_with_actions(self, grid_r2, default_config):
         rec = SwarmRecovery(grid_r2, default_config)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         grid_r2._cells[worker_coord].state = CellState.FAILED
@@ -555,7 +576,8 @@ class TestCombRepair:
         """B8: details sin 'direction' debe retornar False, no crashear."""
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         issue = CombRepair.RepairIssue(
@@ -571,7 +593,8 @@ class TestCombRepair:
         """B8: direction inválido debe retornar False sin crashear."""
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         issue = CombRepair.RepairIssue(
@@ -586,7 +609,8 @@ class TestCombRepair:
         """B8: details=None debe ser manejado limpiamente."""
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         # Construimos directamente un issue con details None vía monkey
@@ -603,7 +627,8 @@ class TestCombRepair:
         """B8: el fix no debe romper repairs de otros tipos."""
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         # Mezclar issues: uno corrupto y uno válido de otro tipo
@@ -624,7 +649,8 @@ class TestCombRepair:
     def test_repair_state_mismatch(self, grid_r2):
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         cell = grid_r2.get_cell(worker_coord)
@@ -640,7 +666,8 @@ class TestCombRepair:
     def test_repair_load_calculation(self, grid_r2):
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         issue = CombRepair.RepairIssue(
@@ -653,7 +680,8 @@ class TestCombRepair:
     def test_repair_metadata(self, grid_r2):
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         cell = grid_r2.get_cell(worker_coord)
@@ -669,7 +697,8 @@ class TestCombRepair:
     def test_repair_history_tracks_successful(self, grid_r2):
         repair = CombRepair(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         grid_r2.get_cell(worker_coord).state = CellState.ACTIVE
@@ -716,7 +745,8 @@ class TestHiveResilience:
     def test_handle_cell_failure_delegates(self, grid_r2):
         res = HiveResilience(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         event = res.handle_cell_failure(worker_coord, FailureType.TIMEOUT)
@@ -725,7 +755,8 @@ class TestHiveResilience:
     def test_setup_replication_delegates(self, grid_r2):
         res = HiveResilience(grid_r2)
         worker_coord = next(
-            c for c, cell in grid_r2._cells.items()
+            c
+            for c, cell in grid_r2._cells.items()
             if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
         )
         replicas = res.setup_replication(worker_coord)
@@ -754,8 +785,14 @@ class TestHiveResilience:
     def test_get_stats_full(self, grid_r2):
         res = HiveResilience(grid_r2)
         stats = res.get_stats()
-        for key in ("tick_count", "failover", "succession",
-                    "redundancy", "recovery", "health_summary"):
+        for key in (
+            "tick_count",
+            "failover",
+            "succession",
+            "redundancy",
+            "recovery",
+            "health_summary",
+        ):
             assert key in stats
 
     def test_initiate_queen_succession(self, grid_r2):

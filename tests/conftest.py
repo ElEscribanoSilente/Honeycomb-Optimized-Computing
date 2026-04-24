@@ -2,6 +2,7 @@
 Configuración de pytest para HOC.
 Añade el directorio raíz al path para importar el paquete.
 """
+
 import sys
 from pathlib import Path
 

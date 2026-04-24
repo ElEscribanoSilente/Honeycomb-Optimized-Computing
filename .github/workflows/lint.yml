@@ -1,0 +1,82 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, "phase/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# NOTE: every job checks out into a subdirectory named `hoc` (a valid Python
+# package name). The default checkout path is the repo name
+# "Honeycomb-Optimized-Computing" whose hyphens break mypy/pytest filesystem-
+# based package inference, because pyproject declares
+# `package-dir = {hoc = "."}` which makes the checkout dir itself act as the
+# package root.
+
+jobs:
+  ruff:
+    name: ruff check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - run: python -m pip install "ruff==0.8.6"
+      - run: python -m ruff check .
+
+  black:
+    name: black --check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - run: python -m pip install "black==26.3.1"
+      - run: python -m black --check .
+
+  mypy:
+    name: mypy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install mscs
+      # Phase 3: strict mypy only on security/memory/resilience (+ __init__.py).
+      # Legacy modules are excluded via [tool.mypy].exclude in pyproject.toml.
+      # See ADR-006 for the graduation plan. With the checkout pinned to a
+      # valid-Python-identifier path ("hoc"), `python -m mypy .` works now.
+      - run: python -m mypy .

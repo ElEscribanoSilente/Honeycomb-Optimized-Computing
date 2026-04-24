@@ -2,11 +2,10 @@
 
 Cobertura objetivo Phase 1: ≥75% en metrics.py.
 """
+
 import pytest
 
 from hoc.core import (
-    CellRole,
-    CellState,
     HexCoord,
     HoneycombConfig,
     HoneycombGrid,
@@ -28,7 +27,6 @@ from hoc.metrics import (
     Summary,
     SwarmMetrics,
 )
-
 
 # ───────────────────────────────────────────────────────────────────────────────
 # FIXTURES
@@ -159,7 +157,7 @@ class TestHistogram:
         # ≤ 10.0: 0.5, 2.0, 7.0 → 3
         assert buckets[10.0] == 3
         # +Inf: todos los 4
-        assert buckets[float('inf')] == 4
+        assert buckets[float("inf")] == 4
 
     def test_mean_empty(self):
         h = Histogram("test")
@@ -296,8 +294,14 @@ class TestCellMetrics:
         cm = CellMetrics(cell)
         cm.record_tick(0.001)
         d = cm.get_metrics_dict()
-        for key in ("coord", "ticks_processed", "errors", "load",
-                    "vcore_count", "tick_duration_mean"):
+        for key in (
+            "coord",
+            "ticks_processed",
+            "errors",
+            "load",
+            "vcore_count",
+            "tick_duration_mean",
+        ):
             assert key in d
 
 
@@ -553,8 +557,12 @@ class TestFlowVisualizer:
     def test_get_flow_stats(self, grid):
         flow = FlowVisualizer(grid)
         stats = flow.get_flow_stats()
-        for key in ("total_pheromone", "active_cells",
-                    "pheromone_connections", "average_pheromone"):
+        for key in (
+            "total_pheromone",
+            "active_cells",
+            "pheromone_connections",
+            "average_pheromone",
+        ):
             assert key in stats
 
 
@@ -566,6 +574,7 @@ class TestFlowVisualizer:
 class TestConcurrency:
     def test_counter_concurrent_inc(self):
         import threading
+
         c = Counter("test")
 
         def worker():
@@ -581,6 +590,7 @@ class TestConcurrency:
 
     def test_gauge_concurrent_inc_dec(self):
         import threading
+
         g = Gauge("test")
 
         def worker():
@@ -597,6 +607,7 @@ class TestConcurrency:
 
     def test_histogram_concurrent_observe(self):
         import threading
+
         h = Histogram("test")
 
         def worker():

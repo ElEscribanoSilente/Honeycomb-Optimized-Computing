@@ -94,158 +94,134 @@ __license__ = "MIT"
 # CORE - Estructuras fundamentales del panal
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CAMV BRIDGE - Integración con CAMV
+# ═══════════════════════════════════════════════════════════════════════════════
+from .bridge import (
+    # Adaptadores
+    CAMVHoneycombBridge,
+    CartesianToHex,
+    # Mapeos
+    CellToVCoreMapper,
+    GridToHypervisorMapper,
+    # Conversores
+    HexToCartesian,
+    VentHoneycombAdapter,
+)
 from .core import (
-    # Grid principal
-    HoneycombGrid,
-    HoneycombConfig,
-    GridTopology,
-
-    # Tipos de celdas
-    HoneycombCell,
-    CellState,
     CellRole,
-    QueenCell,
-    WorkerCell,
+    CellState,
     DroneCell,
-    NurseryCell,
-
+    # Event bus management (v3.1)
+    EventBus,
+    GridTopology,
     # Coordenadas hexagonales
     HexCoord,
     HexDirection,
     HexRing,
-
-    # Event bus management (v3.1)
-    EventBus,
+    # Tipos de celdas
+    HoneycombCell,
+    HoneycombConfig,
+    # Grid principal
+    HoneycombGrid,
+    NurseryCell,
+    QueenCell,
+    WorkerCell,
     get_event_bus,
-    set_event_bus,
     reset_event_bus,
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# NECTAR FLOW - Sistema de comunicación
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from .nectar import (
-    # Flujo principal
-    NectarFlow,
-    NectarChannel,
-    NectarPriority,
-    
-    # Protocolos de comunicación
-    WaggleDance,
-    DanceMessage,
-    DanceDirection,
-    
-    # Feromonas
-    PheromoneTrail,
-    PheromoneType,
-    PheromoneDecay,
-    
-    # Canal de alta prioridad
-    RoyalJelly,
-    RoyalCommand,
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SWARM SCHEDULER - Scheduling bio-inspirado
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from .swarm import (
-    # Scheduler principal
-    SwarmScheduler,
-    SwarmConfig,
-    SwarmPolicy,
-    
-    # Comportamientos
-    BeeBehavior,
-    ForagerBehavior,
-    NurseBehavior,
-    ScoutBehavior,
-    GuardBehavior,
-    
-    # Tareas
-    HiveTask,
-    TaskPollen,
-    TaskNectar,
-    
-    # Balanceo
-    SwarmBalancer,
-    LoadDistribution,
+    set_event_bus,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HIVE MEMORY - Sistema de memoria distribuida
 # ═══════════════════════════════════════════════════════════════════════════════
-
 from .memory import (
-    # Memoria principal
-    HiveMemory,
-    MemoryConfig,
-    
+    CombCell,
     # Capas de almacenamiento
     CombStorage,
-    CombCell,
-    PollenCache,
-    HoneyArchive,
-    
     # Políticas
     EvictionPolicy,
+    # Memoria principal
+    HiveMemory,
+    HoneyArchive,
+    MemoryConfig,
+    PollenCache,
     ReplicationPolicy,
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CAMV BRIDGE - Integración con CAMV
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from .bridge import (
-    # Adaptadores
-    CAMVHoneycombBridge,
-    VentHoneycombAdapter,
-    
-    # Mapeos
-    CellToVCoreMapper,
-    GridToHypervisorMapper,
-    
-    # Conversores
-    HexToCartesian,
-    CartesianToHex,
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RESILIENCE - Sistema de resiliencia
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from .resilience import (
-    # Tolerancia a fallos
-    HiveResilience,
-    CellFailover,
-    QueenSuccession,
-    
-    # Replicación
-    HexRedundancy,
-    MirrorCell,
-    
-    # Recuperación
-    SwarmRecovery,
-    CombRepair,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # METRICS - Observabilidad
 # ═══════════════════════════════════════════════════════════════════════════════
-
 from .metrics import (
+    CellMetrics,
+    FlowVisualizer,
+    HeatmapRenderer,
     # Métricas
     HiveMetrics,
-    CellMetrics,
-    SwarmMetrics,
-    
     # Visualización
     HoneycombVisualizer,
-    HeatmapRenderer,
-    FlowVisualizer,
+    SwarmMetrics,
 )
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# NECTAR FLOW - Sistema de comunicación
+# ═══════════════════════════════════════════════════════════════════════════════
+from .nectar import (
+    DanceDirection,
+    DanceMessage,
+    NectarChannel,
+    # Flujo principal
+    NectarFlow,
+    NectarPriority,
+    PheromoneDecay,
+    # Feromonas
+    PheromoneTrail,
+    PheromoneType,
+    RoyalCommand,
+    # Canal de alta prioridad
+    RoyalJelly,
+    # Protocolos de comunicación
+    WaggleDance,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESILIENCE - Sistema de resiliencia
+# ═══════════════════════════════════════════════════════════════════════════════
+from .resilience import (
+    CellFailover,
+    CombRepair,
+    # Replicación
+    HexRedundancy,
+    # Tolerancia a fallos
+    HiveResilience,
+    MirrorCell,
+    QueenSuccession,
+    # Recuperación
+    SwarmRecovery,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SWARM SCHEDULER - Scheduling bio-inspirado
+# ═══════════════════════════════════════════════════════════════════════════════
+from .swarm import (
+    # Comportamientos
+    BeeBehavior,
+    ForagerBehavior,
+    GuardBehavior,
+    # Tareas
+    HiveTask,
+    LoadDistribution,
+    NurseBehavior,
+    ScoutBehavior,
+    # Balanceo
+    SwarmBalancer,
+    SwarmConfig,
+    SwarmPolicy,
+    # Scheduler principal
+    SwarmScheduler,
+    TaskNectar,
+    TaskPollen,
+)
 
 __all__ = [
     # Metadata
@@ -270,7 +246,6 @@ __all__ = [
     "get_event_bus",
     "set_event_bus",
     "reset_event_bus",
-
     # Nectar Flow
     "NectarFlow",
     "NectarChannel",
@@ -283,7 +258,6 @@ __all__ = [
     "PheromoneDecay",
     "RoyalJelly",
     "RoyalCommand",
-    
     # Swarm Scheduler
     "SwarmScheduler",
     "SwarmConfig",
@@ -298,7 +272,6 @@ __all__ = [
     "TaskNectar",
     "SwarmBalancer",
     "LoadDistribution",
-    
     # Hive Memory
     "HiveMemory",
     "MemoryConfig",
@@ -308,7 +281,6 @@ __all__ = [
     "HoneyArchive",
     "EvictionPolicy",
     "ReplicationPolicy",
-    
     # CAMV Bridge
     "CAMVHoneycombBridge",
     "VentHoneycombAdapter",
@@ -316,7 +288,6 @@ __all__ = [
     "GridToHypervisorMapper",
     "HexToCartesian",
     "CartesianToHex",
-    
     # Resilience
     "HiveResilience",
     "CellFailover",
@@ -325,7 +296,6 @@ __all__ = [
     "MirrorCell",
     "SwarmRecovery",
     "CombRepair",
-    
     # Metrics
     "HiveMetrics",
     "CellMetrics",

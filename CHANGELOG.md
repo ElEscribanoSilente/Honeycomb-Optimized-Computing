@@ -8,6 +8,100 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.3.0-phase03] — 2026-04-24
+
+**Cierre de Fase 3 — Tooling, CI/CD & Code Quality.** 582 tests pasando
+(+161: 133 refactor-compat + 28 coverage boosters), cobertura global
+**75.73%** (primera vez sobre el target 75%), `core.py` (3,615 LOC)
+dividido en 14 submódulos y `metrics.py` (1,169 LOC) en 3 submódulos
+sin romper un solo test. 4 GitHub Actions workflows, 7 ADRs, 3 documentos
+OSS. Bandit sigue 0/0/0; pip-audit limpio. Bug latente **B11** detectado
+por mypy strict sobre `resilience.py` y corregido.
+
+Reporte completo: [snapshot/PHASE_03_CLOSURE.md](snapshot/PHASE_03_CLOSURE.md).
+
+### Added
+
+#### Tooling & quality gates
+- `pyproject.toml` [tool.ruff/black/mypy/coverage/bandit] configurados.
+  Mypy strict en `security.py`, `memory.py`, `resilience.py`; legacy
+  suprimido via `exclude` + `[[tool.mypy.overrides]].ignore_errors` (ver
+  [ADR-006](docs/adr/ADR-006-mypy-legacy-suppression.md)).
+- `requirements-dev.txt` con 12 dev-deps pinneadas.
+- `.pre-commit-config.yaml` con 6 repos de hooks (trailing-whitespace,
+  end-of-file-fixer, check-yaml/toml/json, check-added-large-files,
+  ruff + ruff-format, black, mypy, bandit).
+
+#### CI/CD
+- `.github/workflows/test.yml` — matriz `{ubuntu,macos,windows} × {py3.10,3.11,3.12}`, coverage upload a Codecov.
+- `.github/workflows/lint.yml` — jobs paralelos: ruff check, black --check, mypy.
+- `.github/workflows/security.yml` — bandit (fail en MEDIUM+), pip-audit, safety; cron semanal los lunes 05:00 UTC.
+- `.github/workflows/release.yml` — build sdist+wheel + GitHub release en tags `v*.*.*`; PyPI publish stubbed hasta provisionar cuenta.
+
+#### Refactor estructural
+- **`core/` subpackage** (14 submódulos, todos < 800 LOC): `grid.py`,
+  `grid_geometry.py`, `grid_config.py`, `cells_base.py`, `cells_specialized.py`,
+  `_queen.py`, `cells.py` (facade), `events.py`, `health.py`, `locking.py`,
+  `pheromone.py` (internos), `constants.py`, `__init__.py` (con PEP 562
+  `__getattr__` para transicionales), y `_metrics_internal.py` (eliminado
+  tras mover contenido a `metrics/collection.py`).
+- **`metrics/` subpackage**: `collection.py` (primitives + HiveMetrics +
+  transicionales movidos desde core), `visualization.py` (HoneycombVisualizer),
+  `rendering.py` (HeatmapRenderer, FlowVisualizer), `__init__.py`.
+- `core.py` y `metrics.py` **eliminados**; facades preservan 100% del
+  API público anterior.
+
+#### Tests
+- `tests/test_refactor_compat.py` — 133 tests: re-export parity (67 + 37 + 15 parametrized), identity checks (8 clases), distinct-identity de `CellMetrics` (público vs interno), alias `HexRing = HexRegion`, isinstance cross-path.
+- `tests/test_events_health.py` — 28 tests: EventBus (rate limit, async, priority, history, singleton), CircuitBreaker (4 state transitions), HealthMonitor, HexRegion/HexPathfinder.
+
+#### Documentación
+- `CONTRIBUTING.md` — dev setup, quality checks, PR flow, code style, roadmap discipline.
+- `CODE_OF_CONDUCT.md` — Contributor Covenant v2.1 adoptado por referencia.
+- `SECURITY.md` — supported versions, private disclosure channels, coordinated-disclosure timeline, Phase 2 threat model, past advisories (B1–B11).
+- `docs/adr/` — 6 ADRs numerados + README + template (Michael Nygard format):
+  - ADR-001 Hexagonal topology (retroactivo, v1.0.0).
+  - ADR-002 `mscs` replaces `pickle` (Phase 2).
+  - ADR-003 Shared HMAC key vs per-cell (Phase 2).
+  - ADR-004 `OrderedDict` LRU for `PheromoneTrail` (Phase 2).
+  - ADR-005 Raft-like signed-vote quorum (Phase 2).
+  - ADR-006 Legacy modules suppressed from strict mypy (Phase 3).
+
+#### Audit snapshots
+- `snapshot/bandit_phase03.json` — 0 HIGH / 0 MEDIUM / 0 LOW (8,987 LOC scanned).
+- `snapshot/pip_audit_phase03.txt` — "No known vulnerabilities found".
+- `snapshot/radon_raw_phase03.txt`, `snapshot/radon_cc_phase03.txt` — raw LOC + cyclomatic complexity.
+
+### Fixed
+
+- **B11** [`resilience.py:1138`] `CombRepair._rebuild_cell()` escribía
+  `cell._pheromone_level = 0.0`, pero `HoneycombCell` no tiene tal atributo
+  (el backing es `_pheromone_field`, una `PheromoneField`). Silenciosamente
+  creaba un atributo muerto y dejaba la feromona original intacta tras el
+  rebuild. Fix: reemplazar `_pheromone_field` por una nueva `PheromoneField()`.
+  Misma familia que B9 de Fase 1 (ambos detectados por el mismo patrón de
+  tooling: anotar tipos y correr mypy strict sobre código legacy).
+
+### Changed
+
+- `__init__.py` re-exports ahora importan desde los subpackages `core/` y `metrics/` en lugar de los antiguos monolitos. Identidades preservadas: `hoc.HexCoord is hoc.core.HexCoord is hoc.core.grid_geometry.HexCoord`.
+- Formateo global aplicado por `ruff --fix` (1563 autofixes + 18 unsafe-fixes + 11 manual) y `black` (19 archivos reformateados).
+
+### Deferred
+
+- 5 archivos legacy siguen > 800 LOC: `resilience.py` (1,639), `nectar.py`
+  (1,366), `swarm.py` (1,132), `memory.py` (940), `bridge.py` (886). Splits
+  planificados para fases 4-6 según ADR-006.
+- 6 funciones legacy con CC > 10 (todas en `swarm.py` y `core/grid.py`,
+  movidas desde el antiguo `core.py` sin reescribir lógica).
+- Mypy strict sobre legacy: suprimido en Phase 3; re-habilitación per-módulo
+  en fases siguientes.
+- Benchmark end-to-end no corrido para Phase 3 (refactor sintáctico — no
+  esperamos regresión de perf; si se considera load-bearing se mide en el PR).
+- Workflow `docs.yml` (sphinx): diferido a Fase 9 del roadmap.
+
+---
+
 ## [1.2.0-phase02] — 2026-04-23
 
 **Cierre de Fase 2 — Seguridad & Hardening.** 421 tests pasando (43 nuevos
@@ -218,5 +312,7 @@ Reporte completo: [snapshot/PHASE_01_CLOSURE.md](snapshot/PHASE_01_CLOSURE.md).
 - Auditoría inicial: 3 bugs críticos, 5 altos, 4 medios, 3 bajos (15 totales).
 
 [1.2.0-phase02]: https://github.com/ElEscribanoSilente/Honeycomb-Optimized-Computing/releases/tag/v1.2.0-phase02
+[1.3.0-phase03]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.3.0-phase03
+[1.2.0-phase02]: https://github.com/esraderey/Honeycomb-Optimized-Computing/releases/tag/v1.2.0-phase02
 [1.1.0-phase01]: https://github.com/ElEscribanoSilente/Honeycomb-Optimized-Computing/releases/tag/v1.1.0-phase01
 [1.0.0]: https://github.com/ElEscribanoSilente/Honeycomb-Optimized-Computing/releases/tag/v1.0.0-baseline

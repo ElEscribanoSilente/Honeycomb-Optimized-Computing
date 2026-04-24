@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist)"
+        required: true
+
+permissions:
+  contents: write  # create GitHub release, attach artifacts
+  id-token: write  # OIDC-based PyPI publish (if enabled)
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: hoc/dist/
+          retention-days: 14
+
+  github-release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-phase') }}
+          generate_release_notes: true
+
+  # Phase 3 placeholder: PyPI publish is disabled until the PyPI account is
+  # provisioned. When ready, uncomment the job below, add a `PYPI_TOKEN`
+  # repository secret, and commit a `pypi-publish` environment with deploy
+  # protection rules. Twine/trusted-publishing are both viable; trusted
+  # publishing (OIDC) is preferred — no long-lived token stored in secrets.
+  # pypi-publish:
+  #   name: Publish to PyPI
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   environment:
+  #     name: pypi-publish
+  #     url: https://pypi.org/p/hoc
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: dist
+  #         path: dist/
+  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  #       with:
+  #         # Trusted publisher — no PYPI_TOKEN needed when configured in PyPI.
+  #         # Fall back to token: `password: ${{ secrets.PYPI_TOKEN }}`.
+  #         print-hash: true

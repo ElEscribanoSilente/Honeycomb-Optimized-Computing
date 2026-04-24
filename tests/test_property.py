@@ -4,11 +4,11 @@ Property-based tests con Hypothesis para HexCoord y PheromoneField.
 Verifica invariantes matemáticas y propiedades de la geometría hexagonal y
 del modelo estigmérgico de feromonas.
 """
+
 from __future__ import annotations
 
 import math
 
-import pytest
 from hypothesis import HealthCheck, assume, given, settings, strategies as st
 
 from core import (
@@ -18,7 +18,6 @@ from core import (
     PheromoneField,
     PheromoneType,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Estrategias
@@ -41,13 +40,16 @@ def small_hex_coords(draw):
 
 pheromone_types = st.sampled_from(list(PheromoneType))
 intensities = st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)
-positive_intensities = st.floats(min_value=0.001, max_value=1.0, allow_nan=False, allow_infinity=False)
+positive_intensities = st.floats(
+    min_value=0.001, max_value=1.0, allow_nan=False, allow_infinity=False
+)
 decay_rates = st.floats(min_value=0.01, max_value=0.99, allow_nan=False, allow_infinity=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HexCoord — invariantes geométricas
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestHexCoordCubeInvariant:
     """En coordenadas cúbicas hexagonales: q + r + s ≡ 0."""
@@ -278,10 +280,14 @@ class TestHexCoordRotation:
 # PheromoneDeposit & PheromoneField
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestPheromoneDepositDecay:
 
-    @given(intensity=positive_intensities, decay_rate=decay_rates,
-           elapsed=st.floats(min_value=0.0, max_value=10.0))
+    @given(
+        intensity=positive_intensities,
+        decay_rate=decay_rates,
+        elapsed=st.floats(min_value=0.0, max_value=10.0),
+    )
     def test_decay_never_increases_intensity(self, intensity, decay_rate, elapsed):
         d = PheromoneDeposit(
             ptype=PheromoneType.FOOD,
@@ -334,16 +340,14 @@ class TestPheromoneFieldDeposit:
         f.deposit(ptype, amount)
         assert 0.0 <= f.get_intensity(ptype) <= 1.0
 
-    @given(ptype=pheromone_types,
-           amounts=st.lists(intensities, min_size=1, max_size=10))
+    @given(ptype=pheromone_types, amounts=st.lists(intensities, min_size=1, max_size=10))
     def test_repeated_deposit_never_exceeds_one(self, ptype, amounts):
         f = PheromoneField()
         for a in amounts:
             f.deposit(ptype, a)
         assert f.get_intensity(ptype) <= 1.0 + 1e-9
 
-    @given(ptype=pheromone_types,
-           amounts=st.lists(positive_intensities, min_size=2, max_size=10))
+    @given(ptype=pheromone_types, amounts=st.lists(positive_intensities, min_size=2, max_size=10))
     def test_deposit_monotonic_below_cap(self, ptype, amounts):
         f = PheromoneField()
         prev = 0.0
@@ -355,9 +359,9 @@ class TestPheromoneFieldDeposit:
                 assert current >= prev - 1e-9
             prev = current
 
-    @given(deposits=st.lists(
-        st.tuples(pheromone_types, positive_intensities),
-        min_size=1, max_size=10))
+    @given(
+        deposits=st.lists(st.tuples(pheromone_types, positive_intensities), min_size=1, max_size=10)
+    )
     def test_total_intensity_equals_sum(self, deposits):
         f = PheromoneField()
         for ptype, amount in deposits:
@@ -370,9 +374,9 @@ class TestPheromoneFieldDeposit:
         f = PheromoneField()
         assert f.get_intensity(unused_ptype) == 0.0
 
-    @given(deposits=st.lists(
-        st.tuples(pheromone_types, positive_intensities),
-        min_size=1, max_size=10))
+    @given(
+        deposits=st.lists(st.tuples(pheromone_types, positive_intensities), min_size=1, max_size=10)
+    )
     def test_dominant_type_has_max_intensity(self, deposits):
         f = PheromoneField()
         for ptype, amount in deposits:
@@ -391,9 +395,9 @@ class TestPheromoneFieldDeposit:
 class TestPheromoneFieldDecay:
 
     @settings(suppress_health_check=[HealthCheck.too_slow])
-    @given(deposits=st.lists(
-        st.tuples(pheromone_types, positive_intensities),
-        min_size=1, max_size=5))
+    @given(
+        deposits=st.lists(st.tuples(pheromone_types, positive_intensities), min_size=1, max_size=5)
+    )
     def test_decay_all_never_increases_total(self, deposits):
         f = PheromoneField()
         for ptype, amount in deposits:
@@ -402,9 +406,9 @@ class TestPheromoneFieldDecay:
         f.decay_all(1.0)
         assert f.total_intensity <= before + 1e-9
 
-    @given(deposits=st.lists(
-        st.tuples(pheromone_types, positive_intensities),
-        min_size=1, max_size=5))
+    @given(
+        deposits=st.lists(st.tuples(pheromone_types, positive_intensities), min_size=1, max_size=5)
+    )
     def test_aggressive_decay_drains_field(self, deposits):
         f = PheromoneField()
         for ptype, amount in deposits:
@@ -418,9 +422,9 @@ class TestPheromoneFieldDecay:
 
 class TestPheromoneFieldGradient:
 
-    @given(deposits=st.lists(
-        st.tuples(pheromone_types, positive_intensities),
-        min_size=1, max_size=10))
+    @given(
+        deposits=st.lists(st.tuples(pheromone_types, positive_intensities), min_size=1, max_size=10)
+    )
     def test_gradient_keys_match_active_deposits(self, deposits):
         f = PheromoneField()
         for ptype, amount in deposits:
@@ -432,13 +436,13 @@ class TestPheromoneFieldGradient:
                 assert p in gradient
                 assert math.isclose(gradient[p], f.get_intensity(p), rel_tol=1e-9)
 
-    @given(deposits=st.lists(
-        st.tuples(pheromone_types, positive_intensities),
-        min_size=1, max_size=5))
+    @given(
+        deposits=st.lists(st.tuples(pheromone_types, positive_intensities), min_size=1, max_size=5)
+    )
     def test_to_dict_keys_are_type_names(self, deposits):
         f = PheromoneField()
         for ptype, amount in deposits:
             f.deposit(ptype, amount)
         d = f.to_dict()
-        for key in d.keys():
+        for key in d:
             assert any(p.name == key for p in PheromoneType)

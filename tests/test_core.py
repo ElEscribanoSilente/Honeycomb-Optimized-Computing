@@ -1,17 +1,12 @@
 """Tests para el módulo core de HOC (geometría hexagonal y grid)."""
-import pytest
 
 from hoc.core import (
     HexCoord,
     HexDirection,
-    HoneycombGrid,
-    HoneycombConfig,
-    HoneycombCell,
-    QueenCell,
-    WorkerCell,
-    CellState,
-    CellRole,
     HexRing,
+    HoneycombConfig,
+    HoneycombGrid,
+    QueenCell,
 )
 
 

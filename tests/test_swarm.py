@@ -6,14 +6,14 @@ Verifica el fix:
 - B2.5: SwarmScheduler.tick() ahora limpia _task_index junto con _task_queue
   para tareas COMPLETED/FAILED/CANCELLED → sin leak de memoria.
 """
+
 import time
 
 import pytest
 
-from hoc.core import HexCoord, HoneycombConfig, HoneycombGrid, WorkerCell, QueenCell
-from hoc.nectar import NectarFlow, PheromoneType
+from hoc.core import HexCoord, HoneycombConfig, HoneycombGrid, QueenCell, WorkerCell
+from hoc.nectar import NectarFlow
 from hoc.swarm import (
-    BeeBehavior,
     ForagerBehavior,
     GuardBehavior,
     HiveTask,
@@ -29,7 +29,6 @@ from hoc.swarm import (
     TaskPriority,
     TaskState,
 )
-
 
 # ───────────────────────────────────────────────────────────────────────────────
 # FIXTURES
@@ -64,7 +63,8 @@ def small_scheduler():
 @pytest.fixture
 def worker_cell(grid):
     return next(
-        cell for cell in grid._cells.values()
+        cell
+        for cell in grid._cells.values()
         if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
     )
 
@@ -112,6 +112,7 @@ class TestHiveTask:
         normal = HiveTask(priority=TaskPriority.NORMAL.value)
         # Heapq usa min-heap → critical (0) sale antes que normal (2)
         import heapq
+
         h = []
         heapq.heappush(h, normal)
         heapq.heappush(h, critical)
@@ -188,7 +189,8 @@ class TestForagerBehavior:
     def test_execute_with_callable_payload(self, worker_cell, nectar_flow):
         f = ForagerBehavior(worker_cell, nectar_flow)
         task = HiveTask(
-            priority=2, task_type="compute",
+            priority=2,
+            task_type="compute",
             payload={"execute": lambda: 42},
         )
         f.execute_task(task)
@@ -196,10 +198,13 @@ class TestForagerBehavior:
 
     def test_execute_with_failing_payload(self, worker_cell, nectar_flow):
         f = ForagerBehavior(worker_cell, nectar_flow)
+
         def fail():
             raise RuntimeError("intencional")
+
         task = HiveTask(
-            priority=2, task_type="compute",
+            priority=2,
+            task_type="compute",
             payload={"execute": fail},
         )
         result = f.execute_task(task)
@@ -263,11 +268,13 @@ class TestNurseBehavior:
     def test_tick_incubation(self, worker_cell, nectar_flow):
         n = NurseBehavior(worker_cell, nectar_flow)
         n.warmup_ticks = 1
-        n.incubating.append({
-            "spec": {},
-            "ticks_remaining": 1,
-            "task": HiveTask(priority=2),
-        })
+        n.incubating.append(
+            {
+                "spec": {},
+                "ticks_remaining": 1,
+                "task": HiveTask(priority=2),
+            }
+        )
         ready = n.tick_incubation()
         assert len(ready) == 1
         assert n.incubating == []
@@ -294,7 +301,8 @@ class TestScoutBehavior:
         s = ScoutBehavior(worker_cell, nectar_flow)
         s.exploration_radius = 1
         task = HiveTask(
-            priority=2, task_type="explore",
+            priority=2,
+            task_type="explore",
             payload={"target": worker_cell.coord},
         )
         assert s.execute_task(task) is True
@@ -316,7 +324,8 @@ class TestGuardBehavior:
         g = GuardBehavior(worker_cell, nectar_flow)
         target = HiveTask(priority=2, task_type="compute")
         task = HiveTask(
-            priority=2, task_type="validate",
+            priority=2,
+            task_type="validate",
             payload={"target_task": target},
         )
         assert g.execute_task(task) is True
@@ -327,7 +336,8 @@ class TestGuardBehavior:
         g.add_validation_rule(lambda t: False)  # Bloquea todo
         target = HiveTask(priority=2, task_type="compute")
         task = HiveTask(
-            priority=2, task_type="validate",
+            priority=2,
+            task_type="validate",
             payload={"target_task": target},
         )
         g.execute_task(task)
@@ -413,9 +423,7 @@ class TestSwarmBalancer:
 class TestSwarmScheduler:
     def test_init_creates_behaviors(self, scheduler, grid):
         # Debería haber behaviors para las celdas worker
-        worker_count = sum(
-            1 for c in grid._cells.values() if isinstance(c, WorkerCell)
-        )
+        worker_count = sum(1 for c in grid._cells.values() if isinstance(c, WorkerCell))
         assert len(scheduler._behaviors) == worker_count
 
     def test_submit_task(self, scheduler):
@@ -450,21 +458,18 @@ class TestSwarmScheduler:
             small_scheduler.submit_task("compute", {})
 
     def test_submit_with_priority(self, scheduler):
-        task = scheduler.submit_task(
-            "compute", {}, priority=TaskPriority.CRITICAL
-        )
+        task = scheduler.submit_task("compute", {}, priority=TaskPriority.CRITICAL)
         assert task.priority == TaskPriority.CRITICAL.value
 
     def test_submit_with_target_cell(self, scheduler, worker_cell):
-        task = scheduler.submit_task(
-            "compute", {}, target_cell=worker_cell.coord
-        )
+        task = scheduler.submit_task("compute", {}, target_cell=worker_cell.coord)
         assert task.target_cell == worker_cell.coord
 
     def test_submit_with_callback(self, scheduler):
         called = []
-        task = scheduler.submit_task(
-            "compute", {"execute": lambda: 42},
+        scheduler.submit_task(
+            "compute",
+            {"execute": lambda: 42},
             callback=lambda r: called.append(r),
         )
         # Ejecutar tick para procesar
@@ -543,16 +548,24 @@ class TestSwarmScheduler:
         scheduler.submit_task("compute", {})
         scheduler.tick()
         stats = scheduler.get_stats()
-        for key in ("tick_count", "queue_size", "pending_tasks",
-                    "tasks_completed", "tasks_failed", "behaviors", "balancer"):
+        for key in (
+            "tick_count",
+            "queue_size",
+            "pending_tasks",
+            "tasks_completed",
+            "tasks_failed",
+            "behaviors",
+            "balancer",
+        ):
             assert key in stats
 
     def test_shutdown_cancels_pending(self, scheduler):
         t1 = scheduler.submit_task("compute", {})
-        t2 = scheduler.submit_task("compute", {})
+        scheduler.submit_task("compute", {})
         scheduler.shutdown()
         assert t1.state == TaskState.CANCELLED or t1.state in (
-            TaskState.COMPLETED, TaskState.FAILED
+            TaskState.COMPLETED,
+            TaskState.FAILED,
         )
         assert scheduler.get_queue_size() == 0
         assert len(scheduler._task_index) == 0
@@ -580,6 +593,7 @@ class TestSwarmConfig:
 class TestConcurrency:
     def test_concurrent_submissions(self, scheduler):
         import threading
+
         errors = []
 
         def submit_many(prefix):

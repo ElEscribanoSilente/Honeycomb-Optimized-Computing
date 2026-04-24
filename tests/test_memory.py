@@ -4,6 +4,7 @@ Cobertura objetivo Phase 1: ≥80% en memory.py (módulo crítico previamente si
 Incluye verificación del fix B5 (PollenCache.put: restar tamaño previo antes de
 evaluar capacidad para evitar evicciones espurias en reemplazo de claves).
 """
+
 import time
 
 import pytest
@@ -20,7 +21,6 @@ from hoc.memory import (
     PollenCache,
     ReplicationPolicy,
 )
-
 
 # ───────────────────────────────────────────────────────────────────────────────
 # FIXTURES
@@ -63,8 +63,11 @@ def small_config():
 class TestCacheEntry:
     def test_touch_updates_access(self):
         entry = CacheEntry(
-            key="k", value=1, size_bytes=10,
-            created_at=time.time(), accessed_at=time.time(),
+            key="k",
+            value=1,
+            size_bytes=10,
+            created_at=time.time(),
+            accessed_at=time.time(),
         )
         old_count = entry.access_count
         time.sleep(0.001)
@@ -73,15 +76,21 @@ class TestCacheEntry:
 
     def test_is_expired_false_when_fresh(self):
         entry = CacheEntry(
-            key="k", value=1, size_bytes=10,
-            created_at=time.time(), accessed_at=time.time(),
+            key="k",
+            value=1,
+            size_bytes=10,
+            created_at=time.time(),
+            accessed_at=time.time(),
         )
         assert entry.is_expired(60.0) is False
 
     def test_is_expired_true_when_old(self):
         entry = CacheEntry(
-            key="k", value=1, size_bytes=10,
-            created_at=time.time() - 100, accessed_at=time.time(),
+            key="k",
+            value=1,
+            size_bytes=10,
+            created_at=time.time() - 100,
+            accessed_at=time.time(),
         )
         assert entry.is_expired(10.0) is True
 
@@ -132,8 +141,8 @@ class TestPollenCache:
     def test_hit_rate_tracking(self, default_config):
         cache = PollenCache(default_config)
         cache.put("k", "v")
-        cache.get("k")          # hit
-        cache.get("missing")    # miss
+        cache.get("k")  # hit
+        cache.get("missing")  # miss
         assert cache.hit_rate == pytest.approx(0.5)
 
     def test_stats_dict_keys(self, default_config):
@@ -160,8 +169,8 @@ class TestPollenCache:
         cache = PollenCache(config)
         cache.put("a", 1)
         cache.put("b", 2)
-        cache.get("a")          # "a" pasa al final
-        cache.put("c", 3)       # debería evictar "b" (ahora LRU)
+        cache.get("a")  # "a" pasa al final
+        cache.put("c", 3)  # debería evictar "b" (ahora LRU)
         assert cache.get("a") == 1
         assert cache.get("b") is None
         assert cache.get("c") == 3
@@ -175,7 +184,9 @@ class TestPollenCache:
         cache = PollenCache(config)
         cache.put("a", 1)
         cache.put("b", 2)
-        cache.get("a"); cache.get("a"); cache.get("a")
+        cache.get("a")
+        cache.get("a")
+        cache.get("a")
         cache.get("b")
         cache.put("c", 3)  # debería evictar "b" (menos usada)
         assert cache.get("a") == 1
@@ -640,6 +651,7 @@ class TestHiveMemory:
 class TestConcurrency:
     def test_pollen_concurrent_writes(self, default_config):
         import threading
+
         cache = PollenCache(default_config)
         errors = []
 
@@ -660,6 +672,7 @@ class TestConcurrency:
 
     def test_comb_concurrent_writes(self, small_grid, default_config):
         import threading
+
         store = CombStorage(small_grid, default_config)
         errors = []
 

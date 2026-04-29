@@ -99,6 +99,16 @@ class HoneycombConfig:
     viz_load_medium: float = 0.5
     viz_load_low: float = 0.3
 
+    # Phase 6.4: auto-checkpointing during tick().
+    # ``checkpoint_interval_ticks=None`` (default) disables auto-checkpoint.
+    # Setting it to e.g. 100 + ``checkpoint_path="/var/hoc/snapshot.bin"``
+    # makes the grid persist itself every 100 ticks. The write is atomic
+    # (``HoneycombGrid.checkpoint`` writes to ``.tmp`` and renames) so a
+    # crash mid-write does not corrupt the previous snapshot.
+    checkpoint_interval_ticks: int | None = None
+    checkpoint_path: str | None = None
+    checkpoint_compress: bool = False
+
     def __post_init__(self):
         """
         v3.0 FIX: Usa ValueError en lugar de assert.
@@ -121,6 +131,15 @@ class HoneycombConfig:
             )
         if self.max_parallel_rings <= 0:
             raise ValueError(f"max_parallel_rings must be positive, got {self.max_parallel_rings}")
+        # Phase 6.4: validate checkpoint config consistency.
+        if self.checkpoint_interval_ticks is not None:
+            if self.checkpoint_interval_ticks <= 0:
+                raise ValueError(
+                    f"checkpoint_interval_ticks must be positive when set, "
+                    f"got {self.checkpoint_interval_ticks}"
+                )
+            if not self.checkpoint_path:
+                raise ValueError("checkpoint_interval_ticks requires checkpoint_path to be set")
 
     def cells_at_radius(self, r: int) -> int:
         return 1 if r == 0 else 6 * r

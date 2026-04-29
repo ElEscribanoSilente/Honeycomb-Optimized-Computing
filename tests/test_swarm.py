@@ -474,13 +474,13 @@ class TestSwarmScheduler:
         )
         # Ejecutar tick para procesar
         for _ in range(3):
-            scheduler.tick()
+            scheduler.run_tick_sync()
         # El callback debería invocarse cuando una tarea completa
         # (no garantizado en N ticks para una tarea sin target_cell, así que
         # solo verificamos que tick funcione sin errores)
 
     def test_tick_runs_clean(self, scheduler):
-        result = scheduler.tick()
+        result = scheduler.run_tick_sync()
         assert "tick" in result
         assert "tasks_processed" in result
 
@@ -489,7 +489,7 @@ class TestSwarmScheduler:
         scheduler.submit_task("compute", {})
         # Ejecutar varios ticks
         for _ in range(5):
-            scheduler.tick()
+            scheduler.run_tick_sync()
         # Verificar que hubo procesamiento eventual
         stats = scheduler.get_stats()
         assert stats["tick_count"] == 5
@@ -504,7 +504,7 @@ class TestSwarmScheduler:
         task1.state = TaskState.COMPLETED
         task2.state = TaskState.COMPLETED
         # Tick procesa el cleanup
-        scheduler.tick()
+        scheduler.run_tick_sync()
         # _task_index ya no debe contenerlas
         assert task1.task_id not in scheduler._task_index
         assert task2.task_id not in scheduler._task_index
@@ -513,21 +513,21 @@ class TestSwarmScheduler:
         """B2.5: tareas CANCELLED también se limpian del index."""
         task = scheduler.submit_task("compute", {})
         scheduler.cancel_task(task.task_id)
-        scheduler.tick()
+        scheduler.run_tick_sync()
         assert task.task_id not in scheduler._task_index
 
     def test_b2_5_task_index_cleaned_after_failed(self, scheduler):
         """B2.5: tareas FAILED también se limpian del index."""
         task = scheduler.submit_task("compute", {})
         task.state = TaskState.FAILED
-        scheduler.tick()
+        scheduler.run_tick_sync()
         assert task.task_id not in scheduler._task_index
 
     def test_b2_5_pending_tasks_kept_in_index(self, scheduler):
         """B2.5: las tareas PENDING/RUNNING NO deben limpiarse."""
         task = scheduler.submit_task("compute", {}, target_cell=HexCoord(99, 99))
         # Como el target no existe, la tarea queda PENDING
-        scheduler.tick()
+        scheduler.run_tick_sync()
         assert task.task_id in scheduler._task_index
 
     def test_b2_5_no_leak_after_many_cycles(self, scheduler):
@@ -535,7 +535,7 @@ class TestSwarmScheduler:
         for _ in range(20):
             t = scheduler.submit_task("compute", {})
             t.state = TaskState.COMPLETED
-            scheduler.tick()
+            scheduler.run_tick_sync()
         # _task_index debe estar prácticamente vacío
         assert len(scheduler._task_index) <= 5  # margen para tareas en transición
 
@@ -546,7 +546,7 @@ class TestSwarmScheduler:
 
     def test_get_stats_full(self, scheduler):
         scheduler.submit_task("compute", {})
-        scheduler.tick()
+        scheduler.run_tick_sync()
         stats = scheduler.get_stats()
         for key in (
             "tick_count",

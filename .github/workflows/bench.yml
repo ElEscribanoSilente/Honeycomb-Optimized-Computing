@@ -1,0 +1,106 @@
+name: Bench Regression
+
+on:
+  push:
+    branches: [main, "phase/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# NOTE: every job checks out into a subdirectory named `hoc` (a valid Python
+# package name). The default checkout path is the repo name
+# "Honeycomb-Optimized-Computing" whose hyphens break mypy/pytest filesystem-
+# based package inference. See lint.yml for the full rationale.
+
+jobs:
+  bench-regression:
+    name: bench regression vs snapshot/bench_baseline_ci.json
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install mscs
+      # Phase 5.5: capture a fresh benchmark snapshot from this commit.
+      # ``--benchmark-warmup=on`` + ``--benchmark-min-time=0.5`` reduce
+      # the per-bench noise floor (sub-microsecond benches showed ±10%
+      # run-to-run variance without warmup) so the >10% threshold is
+      # signal-driven rather than CI-jitter-driven.
+      - name: Capture current bench
+        run: |
+          python -m pytest benchmarks/ \
+            --benchmark-only \
+            --benchmark-json=snapshot/bench_current.json \
+            --benchmark-warmup=on \
+            --benchmark-min-time=0.5 \
+            -q
+      # Condense the raw pytest-benchmark output (~35 MB of per-round
+      # samples) to summary stats only, so compare_bench.py — which
+      # reads the condensed shape committed in snapshot/bench_baseline.json
+      # — can diff against the baseline.
+      - name: Condense bench JSON
+        run: |
+          python -c "
+          import json
+          with open('snapshot/bench_current.json') as f:
+              data = json.load(f)
+          condensed = {
+              'machine_info': data.get('machine_info', {}),
+              'commit_info': data.get('commit_info', {}),
+              'datetime': data.get('datetime'),
+              'version': data.get('version'),
+              'benchmarks': [
+                  {
+                      'name': b['name'],
+                      'fullname': b['fullname'],
+                      'group': b.get('group'),
+                      'stats': {k: b['stats'].get(k) for k in
+                                ('min','mean','median','max','stddev','rounds','iqr')},
+                  }
+                  for b in data.get('benchmarks', [])
+              ],
+          }
+          with open('snapshot/bench_current.json', 'w') as f:
+              json.dump(condensed, f, indent=2, sort_keys=True)
+          "
+      # Phase 6.7: baseline now captured on ``ubuntu-latest`` (this same
+      # workflow, ``workflow_dispatch`` from main commit 38240a7) and
+      # committed as ``snapshot/bench_baseline_ci.json``. Cross-runner
+      # variance is gone — we compare ubuntu vs ubuntu — so the
+      # ``continue-on-error`` advisory has been dropped and the
+      # threshold tightened back to the original 10%. ``>10%`` mean
+      # regression now hard-fails the build.
+      #
+      # ``snapshot/bench_baseline.json`` is kept untouched for local
+      # developer use (Windows / macOS): its noise floor matches the
+      # local hardware and the documented ``compare_bench.py`` invocation
+      # in CONTRIBUTING.md still points at it for pre-push checks.
+      - name: Compare vs CI baseline
+        run: |
+          python scripts/compare_bench.py \
+            snapshot/bench_baseline_ci.json \
+            snapshot/bench_current.json \
+            --threshold 10.0
+      # Upload the current snapshot for reviewers / future baselines.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-current-${{ github.run_id }}
+          path: hoc/snapshot/bench_current.json
+          retention-days: 30

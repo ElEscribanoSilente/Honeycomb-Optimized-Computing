@@ -1,0 +1,19 @@
+nectar.py
+    M 409:4 PheromoneTrail.evaporate - C
+    M 458:4 PheromoneTrail.diffuse_to_neighbors - C
+    M 758:4 WaggleDance.propagate - C
+resilience.py
+    M 272:4 CellFailover.find_failover_target - C
+swarm.py
+    M 1014:4 SwarmScheduler.tick - C
+    M 264:4 ForagerBehavior.select_task - C
+    M 774:4 SwarmBalancer.execute_work_stealing - C
+benchmarks\bench_heavy_mixed.py
+    F 23:0 run_heavy_mixed_benchmark - C
+core\grid.py
+    M 625:4 HoneycombGrid.visualize_ascii - C
+    M 414:4 HoneycombGrid.tick - C
+    M 590:4 HoneycombGrid.get_stats - C
+
+11 blocks (classes, functions, methods) analyzed.
+Average complexity: C (13.636363636363637)

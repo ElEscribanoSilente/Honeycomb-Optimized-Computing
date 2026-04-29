@@ -2,3 +2,17 @@
 # Dependencias de producción
 
 numpy>=1.21.0
+# Phase 4 (2026-04-24): tramoya powers the state-machine subpackage
+# (CellState/TaskLifecycle/QueenSuccession/PheromoneDeposit/FailoverFlow).
+# Pinned for reproducibility — see ADR-007 for the integration rationale.
+# 2026-04-25: bumped 1.4.0 → 1.4.1 for the deque-history (O(1) pop) +
+# transition-graph __eq__ fixes, both on HOC's own P0 list.
+# 2026-04-26: bumped 1.4.1 → 1.5.0. Drop-in upgrade — public API
+# unchanged (Machine, MachineBuilder, exceptions, WILDCARD); only
+# additive new exports (Deque, deque, warnings).
+tramoya==1.5.0
+# Phase 5.3 (2026-04-26): structlog powers the structured event log
+# (cell state transitions, migrations, elections, seals). JSON output
+# in production, colored ConsoleRenderer in dev. ~70 KB, MIT, zero
+# transitive deps. See ADR-011 for the observability stack rationale.
+structlog>=25.0.0

@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, ClassVar
 
+import numpy as np
+
 if TYPE_CHECKING:
     from .grid import HexCoord
 
@@ -111,16 +113,47 @@ class PheromoneField:
         return deposit.intensity if deposit else 0.0
 
     def decay_all(self, elapsed: float = 1.0) -> None:
-        """Aplica decaimiento a todas las feromonas."""
-        with self._lock:
-            to_remove = []
-            for ptype, deposit in self._deposits.items():
-                deposit.decay(elapsed)
-                if not deposit.is_active:
-                    to_remove.append(ptype)
+        """Aplica decaimiento a todas las feromonas.
 
-            for ptype in to_remove:
-                del self._deposits[ptype]
+        Phase 7.6: when the field carries 4+ deposits, batch the
+        decay through numpy. ``intensity *= (1 - decay_rate)**elapsed``
+        vectorises cleanly into a single ``np.power`` + multiply, with
+        a tombstone pass to drop sub-threshold deposits. Below the
+        threshold the per-deposit Python loop is faster (numpy adds
+        constant overhead that swamps the win on n<=3).
+        """
+        with self._lock:
+            n = len(self._deposits)
+            if n >= 4:
+                # SIMD path. Snapshot current state into parallel
+                # arrays, apply the decay, write back, drop dead rows.
+                ptypes = list(self._deposits)
+                intensities = np.fromiter(
+                    (self._deposits[p].intensity for p in ptypes),
+                    dtype=np.float64,
+                    count=n,
+                )
+                rates = np.fromiter(
+                    (self._deposits[p].decay_rate for p in ptypes),
+                    dtype=np.float64,
+                    count=n,
+                )
+                factors = np.power(1.0 - rates, elapsed)
+                new_intensities = intensities * factors
+                threshold = PheromoneDeposit.ACTIVE_THRESHOLD
+                for ptype, intensity in zip(ptypes, new_intensities, strict=True):
+                    if intensity <= threshold:
+                        del self._deposits[ptype]
+                    else:
+                        self._deposits[ptype].intensity = float(intensity)
+            else:
+                to_remove: list[PheromoneType] = []
+                for ptype, deposit in self._deposits.items():
+                    deposit.decay(elapsed)
+                    if not deposit.is_active:
+                        to_remove.append(ptype)
+                for ptype in to_remove:
+                    del self._deposits[ptype]
 
             self._update_total()
 

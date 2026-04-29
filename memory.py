@@ -62,6 +62,7 @@ from .security import (
     secure_choice,
     serialize as _secure_serialize,
 )
+from .storage import MemoryBackend, StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -609,7 +610,12 @@ class HoneyArchive:
     - Recuperación de fallos
     """
 
-    def __init__(self, config: MemoryConfig, base_path: str | None = None):
+    def __init__(
+        self,
+        config: MemoryConfig,
+        base_path: str | None = None,
+        backend: StorageBackend | None = None,
+    ):
         self.config = config
         # Phase 2: resolvemos el base_path a un path absoluto canónico. Esto
         # no crea el directorio (el checkpoint actual es in-memory) pero
@@ -622,7 +628,14 @@ class HoneyArchive:
         if base_path is None:
             base_path = str(Path(tempfile.gettempdir()) / "hoc-honey")
         self.base_path: Path = Path(base_path).resolve()
-        self._archive: dict[str, bytes] = {}
+        # Phase 6.1: storage backend abstraction. The default
+        # ``MemoryBackend`` wraps a thread-safe dict, preserving the
+        # pre-Phase-6 in-memory behaviour byte-for-byte. Callers that
+        # want real persistence pass an alternate backend (Phase 6.2:
+        # ``SQLiteBackend``; Phase 6.9: ``LMDBBackend``/``S3Backend``/
+        # ``RedisBackend``). HMAC envelope + mscs framing stay in this
+        # archive class — the backend only ever sees opaque bytes.
+        self._backend: StorageBackend = backend if backend is not None else MemoryBackend()
         self._metadata: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._tick_count = 0
@@ -684,7 +697,12 @@ class HoneyArchive:
             compressed = self._compress(serialized)
 
             with self._lock:
-                self._archive[key] = compressed
+                # Phase 6.1: pluggable backend. ``MemoryBackend`` (default)
+                # wraps a dict; ``SQLiteBackend`` (Phase 6.2) writes to
+                # disk. The bytes are still HMAC-signed + mscs-framed +
+                # compressed before they reach this call, so the backend
+                # cannot inspect or tamper with the payload undetected.
+                self._backend.put(key, compressed)
                 self._metadata[key] = {
                     "archived_at": time.time(),
                     "size_original": len(serialized),
@@ -710,11 +728,11 @@ class HoneyArchive:
             Valor o None si no existe
         """
         with self._lock:
-            if key not in self._archive:
+            compressed = self._backend.get(key)
+            if compressed is None:
                 return None
 
             try:
-                compressed = self._archive[key]
                 decompressed = self._decompress(compressed)
                 # Phase 2: HMAC-SHA256 + registry strict. Igual que CombStorage.
                 return _secure_deserialize(decompressed, verify=True, strict=True)
@@ -728,8 +746,7 @@ class HoneyArchive:
     def delete(self, key: str) -> bool:
         """Elimina un valor archivado."""
         with self._lock:
-            if key in self._archive:
-                del self._archive[key]
+            if self._backend.delete(key):
                 self._metadata.pop(key, None)
                 return True
             return False
@@ -751,8 +768,16 @@ class HoneyArchive:
         total_original = sum(m.get("size_original", 0) for m in self._metadata.values())
         total_compressed = sum(m.get("size_compressed", 0) for m in self._metadata.values())
 
+        # Phase 6.1: ``items`` counts entries in the backend, which the
+        # protocol exposes via ``keys()``. ``len(self._metadata)`` would
+        # also work since archive() / delete() keep both indices in sync,
+        # but reading from the backend is the more honest reflection of
+        # "what's actually stored".
         return {
-            "items": len(self._archive),
+            # ``self._backend.keys()`` is the StorageBackend Protocol method
+            # (returns an iterator filtered by an optional prefix), not the
+            # dict-typical ``.keys()`` view. SIM118 misreads it; suppress.
+            "items": sum(1 for _ in self._backend.keys()),  # noqa: SIM118
             "total_size_original": total_original,
             "total_size_compressed": total_compressed,
             "overall_compression_ratio": (

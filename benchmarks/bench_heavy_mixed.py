@@ -70,7 +70,7 @@ def run_heavy_mixed_benchmark(
             break
         if len(tick_results) >= max_ticks:
             break
-        res = scheduler.tick()
+        res = scheduler.run_tick_sync()
         tick_results.append(res)
     elapsed = time.perf_counter() - start
 

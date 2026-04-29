@@ -208,6 +208,86 @@ class TestCellFailover:
         target = fo.find_failover_target(worker_coord)
         assert target is None or target != worker_coord
 
+    # ── Phase 5.1: MIGRATING wire-up in CellFailover._migrate_work ──
+
+    def test_migrate_work_observes_migrating_in_fsm_history(self, grid_r2, default_config):
+        """Phase 5.1: the source cell transitions through MIGRATING before
+        landing at FAILED. The transition is observable via the per-cell
+        FSM history (capped at 8 entries; MIGRATING is the second-to-last
+        in the success path)."""
+        fo = CellFailover(grid_r2, default_config)
+        worker_coord = next(
+            c
+            for c, cell in grid_r2._cells.items()
+            if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
+        )
+        source_cell = grid_r2.get_cell(worker_coord)
+        event = fo.handle_failure(worker_coord, FailureType.TIMEOUT)
+        if not event.success:
+            pytest.skip("Failover did not succeed in this fixture; rerun on a healthier grid")
+        assert source_cell.state == CellState.FAILED
+        assert "MIGRATING" in source_cell.fsm.history
+
+    def test_migrate_work_rolls_back_state_on_exception(self, grid_r2, default_config, monkeypatch):
+        """Phase 5.1: when the migration loop raises, the source state is
+        restored to its pre-MIGRATING value. vCore rollback (re-attaching
+        what was migrated) is the FailoverFlow.undo job in 5.2c.
+
+        ``HoneycombCell`` uses ``__slots__`` so we cannot patch the
+        instance method. Patching the class works because the method is
+        called via the descriptor on the source/target instances. We
+        also have to seed the source cell's vCore *before* patching so
+        the setup itself does not get swallowed by the synthetic raise.
+        """
+        fo = CellFailover(grid_r2, default_config)
+        worker_coord = next(
+            c
+            for c, cell in grid_r2._cells.items()
+            if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
+        )
+        source_cell = grid_r2.get_cell(worker_coord)
+        target_coord = fo.find_failover_target(worker_coord)
+        assert target_coord is not None, "Test fixture issue: no failover target available"
+
+        # Set source to a non-default live state so we can detect rollback.
+        source_cell.add_vcore(object())  # EMPTY -> IDLE
+        original = source_cell.state
+        assert original == CellState.IDLE
+
+        # Patch HoneycombCell.add_vcore at the class level (slots block
+        # instance-level monkeypatching). The patched method only fires
+        # for the migration loop because we already added the source's
+        # vCore above.
+        from hoc.core.cells_base import HoneycombCell
+
+        def boom(self, _vcore):  # pragma: no cover - captured by except path
+            raise RuntimeError("synthetic migration failure")
+
+        monkeypatch.setattr(HoneycombCell, "add_vcore", boom)
+
+        result = fo._migrate_work(worker_coord, target_coord)
+
+        assert result is False
+        assert source_cell.state == original, (
+            f"Rollback failed: source ended at {source_cell.state.name} "
+            f"instead of {original.name}"
+        )
+
+    def test_migrate_work_unknown_source_returns_false_no_state_change(
+        self, grid_r2, default_config
+    ):
+        """Phase 5.1 must not regress the existing ``no source/target →
+        return False`` path: missing cells short-circuit before any FSM
+        transition fires."""
+        fo = CellFailover(grid_r2, default_config)
+        bogus = HexCoord(999, 999)
+        target_coord = next(
+            c
+            for c, cell in grid_r2._cells.items()
+            if isinstance(cell, WorkerCell) and not isinstance(cell, QueenCell)
+        )
+        assert fo._migrate_work(bogus, target_coord) is False
+
 
 # ───────────────────────────────────────────────────────────────────────────────
 # QUEEN SUCCESSION

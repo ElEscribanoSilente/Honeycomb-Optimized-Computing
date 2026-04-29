@@ -133,6 +133,20 @@ from .core import (
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# OBSERVABILITY - Logging estructurado (Phase 5.3)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 5.3: structured event logging lives in ``hoc.core.observability``
+# (a sibling of cells_base/grid/etc. inside the core/ subpackage). It
+# avoids the dual-import dance that the package-dir trick imposes on
+# top-level modules. Re-export the public API here so callers can do
+# ``from hoc import configure_logging, get_event_logger``.
+from .core.observability import (
+    EVENT_LOGGER_NAME,
+    configure_logging,
+    get_event_logger,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # HIVE MEMORY - Sistema de memoria distribuida
 # ═══════════════════════════════════════════════════════════════════════════════
 from .memory import (
@@ -198,6 +212,19 @@ from .resilience import (
     QueenSuccession,
     # Recuperación
     SwarmRecovery,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SANDBOX - Aislamiento de procesos (Phase 7.4)
+# ═══════════════════════════════════════════════════════════════════════════════
+from .sandbox import (
+    IsolationMode,
+    SandboxConfig,
+    SandboxCrashed,
+    SandboxedTaskRunner,
+    SandboxError,
+    SandboxNotSupported,
+    SandboxTimeout,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -296,6 +323,18 @@ __all__ = [
     "MirrorCell",
     "SwarmRecovery",
     "CombRepair",
+    # Sandbox (Phase 7.4)
+    "IsolationMode",
+    "SandboxConfig",
+    "SandboxedTaskRunner",
+    "SandboxError",
+    "SandboxTimeout",
+    "SandboxCrashed",
+    "SandboxNotSupported",
+    # Observability (Phase 5.3) — re-exported from hoc.core.observability
+    "configure_logging",
+    "get_event_logger",
+    "EVENT_LOGGER_NAME",
     # Metrics
     "HiveMetrics",
     "CellMetrics",

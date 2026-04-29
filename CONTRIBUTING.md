@@ -84,11 +84,72 @@ python -m pip_audit -r requirements.txt
 # Complexity
 python -m radon cc . -a -nc
 python -m radon raw . -s
+
+# Phase 5.5 / 6.7: bench regression check. The repo carries two baselines:
+#
+#   - ``snapshot/bench_baseline.json``     — captured on a developer machine
+#                                            (Windows). Use this LOCALLY:
+#                                            its noise floor matches your
+#                                            hardware so a real regression
+#                                            stands out.
+#   - ``snapshot/bench_baseline_ci.json``  — captured on GitHub Actions
+#                                            ``ubuntu-latest`` runner. CI
+#                                            uses this one (Phase 6.7
+#                                            removed the cross-runner
+#                                            mismatch from the comparison).
+#
+# ``--benchmark-warmup=on`` + ``--benchmark-min-time=0.5`` reduce the noise
+# floor on sub-microsecond benches.
+python -m pytest benchmarks/ \
+    --benchmark-only \
+    --benchmark-json=snapshot/bench_current.json \
+    --benchmark-warmup=on \
+    --benchmark-min-time=0.5 \
+    -q
+
+# Compare against snapshot/bench_baseline.json (LOCAL). Fail if any
+# benchmark regressed > 10% on the mean.
+python scripts/compare_bench.py \
+    snapshot/bench_baseline.json \
+    snapshot/bench_current.json \
+    --threshold 10.0
 ```
 
 All of the above run automatically on every PR via GitHub Actions
 (`.github/workflows/lint.yml`, `.github/workflows/security.yml`,
-`.github/workflows/test.yml`).
+`.github/workflows/test.yml`, `.github/workflows/bench.yml`). CI compares
+against `snapshot/bench_baseline_ci.json`; local comparison uses
+`snapshot/bench_baseline.json` (see commands above).
+
+### Regenerating the CI baseline (`snapshot/bench_baseline_ci.json`)
+
+Cross-runner variance was the reason Phase 5.5 left the bench job in
+advisory mode (`continue-on-error: true`, threshold raised to 50%).
+Phase 6.7 fixed that by capturing a baseline on the same hardware CI
+uses:
+
+```bash
+# 1. Trigger the bench workflow on the target ref (typically main).
+gh workflow run bench.yml --ref main
+
+# 2. Wait for it to finish and find the run id.
+gh run list --workflow=bench.yml --limit 1
+
+# 3. Download the artifact (a single file: bench_current.json).
+gh run download <run-id> -n bench-current-<run-id> -D .tmp_bench/
+
+# 4. Move it into place and commit alongside the bump that motivated it.
+mv .tmp_bench/bench_current.json snapshot/bench_baseline_ci.json
+git add snapshot/bench_baseline_ci.json
+git commit -m "chore(bench): refresh CI baseline (<short-rationale>)"
+```
+
+Refresh the CI baseline only when there's a deliberate, documented
+performance change that the CI threshold would otherwise flag (e.g. a
+deliberate optimization that knocks 20% off a hot path, or a runner
+image upgrade that uniformly shifts the noise floor). Routine refreshes
+mask regressions — don't do it as part of "keeping the baseline
+current".
 
 ## Making a change
 

@@ -123,8 +123,39 @@ with the `[[tool.mypy.overrides]]` block (for import-following), with
 - `pyproject.toml` `[tool.mypy]`, `[[tool.mypy.overrides]]`, `exclude`
   patterns.
 - Phase 3 closure: `snapshot/PHASE_03_CLOSURE.md` "Mypy gap" section.
+- Phase 4 closure: `snapshot/PHASE_04_CLOSURE.md` "4.10 Graduación
+  ADR-006" section.
 - `.github/workflows/lint.yml` (CI enforcement on `python -m mypy .`).
 - CONTRIBUTING.md "Code style" section on types.
 - B11 discovery: `resilience.py:1138` — wrote to
   `cell._pheromone_level` (non-existent); corrected to
   `cell._pheromone_field = PheromoneField()`.
+- B12 discovery (Phase 4 graduation): `nectar.py:~1174`
+  `RoyalJelly.get_stats` referenced `cmd.command` on a `RoyalCommand`
+  enum value (no such attribute). Fix: `cmd.command.name` →
+  `cmd.name`, `c.command == cmd.command` → `c.command == cmd`.
+
+## Phase 4 graduation outcome (2026-04-24)
+
+The graduation schedule above held: Phase 4 removed both `swarm` and
+`nectar` from the `[[tool.mypy.overrides]]` `ignore_errors=true` list.
+The 29 errors that surfaced (11 in swarm, 18 in nectar) were annotated
+inline. The pattern of fixes was uniform — generic-parameter omissions,
+implicit `Optional`s, missing return annotations, dict/defaultdict
+generics, `Callable`s without type args, `cast(bytes, _mscs.dumps(...))`
+to bridge the `Any` return — exactly what the ADR predicted.
+
+The graduation also surfaced **B12** (described above) as a
+runtime-impacting bug, validating the third bug in the B9/B11 family
+that mypy strict catches: silent attribute lookups against types that
+do not declare the field.
+
+Remaining schedule (unchanged from the original ADR):
+
+| Phase | Module graduated | Status |
+|-------|------------------|--------|
+| 4 | `swarm.py` | ✅ Graduated 2026-04-24 (Phase 4) |
+| 4 | `nectar.py` | ✅ Graduated 2026-04-24 (Phase 4) |
+| 5 | `core/` subpkg | pending |
+| 5 | `metrics/` subpkg | pending |
+| 6 | `bridge.py` | pending |

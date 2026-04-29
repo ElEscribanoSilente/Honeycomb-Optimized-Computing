@@ -80,3 +80,65 @@ jobs:
       # See ADR-006 for the graduation plan. With the checkout pinned to a
       # valid-Python-identifier path ("hoc"), `python -m mypy .` works now.
       - run: python -m mypy .
+      # Phase 4: state_machines/ is excluded from `mypy .` because the
+      # cwd-name inference (HOC.state_machines.*) collides with sys.path
+      # search (state_machines.*). Strict mypy is preserved by listing
+      # the files via shell glob — the directory exclude does not apply
+      # to explicit file args. See ADR-007.
+      - run: python -m mypy --explicit-package-bases state_machines/*.py
+
+  state-machines-doc:
+    name: state-machines.md drift check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      # Phase 4: regenerate docs/state-machines.md and fail if it differs
+      # from what is on disk. Same check tests/test_mermaid_export.py
+      # runs locally via pytest. See ADR-007.
+      - run: python scripts/generate_state_machines_md.py --check
+
+  choreo-static-check:
+    name: choreo static FSM check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hoc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: hoc/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      # Phase 5.6 (formerly Phase 4.1): choreo runs static AST analysis
+      # comparing observed ``obj.state = X`` mutations against declared
+      # FSM specs in ``state_machines/``. After Phase 5.1 + 5.2a/b/c
+      # closed every wire-up (no dead states, no enum-extras, no
+      # declarative-only FSMs), the report is 0 errors / 0 warnings /
+      # 0 info. ``--strict`` raises warnings to errors so any future
+      # regression (e.g. a new FSM left declarative-only, or a dead
+      # enum member added without a wire-up plan) breaks CI. See
+      # ADR-008 and ADR-012.
+      - run: python -m choreo check --strict
+      # Sanity check: JSON output is valid JSON.
+      - run: python -m choreo check --json | python -m json.tool > /dev/null

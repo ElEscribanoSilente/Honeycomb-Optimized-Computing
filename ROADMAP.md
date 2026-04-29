@@ -215,10 +215,21 @@ bridge 886) — splits planificados para phases 4-6.
 
 ---
 
-## FASE 4 — Configuración & Developer Experience
+## FASE 4 — Configuración & Developer Experience — **CERRADA** 🟢
 **Objetivo**: HOC usable sin necesidad de leer código fuente. **Integración profunda de [tramoya](https://pypi.org/project/tramoya/)** para state machines formales.
 **Duración**: 3-4 semanas
-**Tag al cerrar**: `v1.4.0-phase04`
+**Tag al cerrar**: `v1.4.0-phase04` — cierre 2026-04-24
+
+**Resultado**: 663 tests pasando (+81 vs. Phase 3), cobertura **76.34 %**
+(+0.61 pts), **5 FSMs formalizadas** (CellState wired, 4 declarativas),
+`docs/state-machines.md` auto-generado con drift detector en CI,
+`swarm.py` + `nectar.py` graduados de mypy override (29 anotaciones), bug
+**B12** (RoyalJelly.get_stats AttributeError latente) corregido. Bandit
+0/0/0 mantenido. Configuración externa (4.8) y CLI (4.9) **diferidos a
+Phase 5+** por priorización del usuario; las 4 FSMs declarativas (gap
+de wire-up real) también diferidas. Cierre completo:
+[snapshot/PHASE_04_CLOSURE.md](snapshot/PHASE_04_CLOSURE.md). Decisión de
+arquitectura: [ADR-007](docs/adr/ADR-007-tramoya-fsm-integration.md).
 
 ### Integración de tramoya
 **Por qué tramoya**: librería propia, MIT, zero deps, FSM con guards/hooks, undo, viz Mermaid/Graphviz.
@@ -293,9 +304,125 @@ architect = "my_pkg.behaviors:ArchitectBehavior"
 
 ---
 
-## FASE 5 — Observabilidad
-**Objetivo**: Visibilidad operacional production-grade. **Integración de [trame](https://kitware.github.io/trame/)** (asumiendo que "tramoya" del usuario era trame para dashboards) — opcional, ver nota.
-**Duración**: 3 semanas
+## FASE 4.1 — Wire-up TaskLifecycle + `choreo` static FSM checker — **CERRADA** 🟢
+**Objetivo**: Cerrar la brecha entre las 4 FSMs declarativas y las 1 wired
+con (a) wire-up real de TaskLifecycle y (b) una herramienta nueva,
+`choreo`, que verifica estáticamente las FSMs sin necesidad de wire-up
+en runtime.
+**Duración**: 1 día
+**Tag al cerrar**: `v1.4.1-phase04.1` — cierre 2026-04-24
+
+**Resultado**: 705 tests pasando (+42 vs Phase 4: 10 wire-up + 32 choreo).
+TaskLifecycle FSM **wired** vía `HiveTask.__setattr__` (ahora 2 de 5 FSMs
+wired). Nueva herramienta `choreo` (~600 LOC, subpaquete propio en
+`choreo/`) implementa verificación estática AST-based: detecta mutaciones
+undocumented (errores), dead states + enum-extras (warnings), FSMs
+declarative-only (info). Aplicada a HOC produce el reporte exacto: 0
+errores, 2 warnings (B12-bis `TaskState.ASSIGNED`, B12-ter 4 `CellState`
+dead), 3 info (Pheromone/Succession/Failover). Nuevo job CI
+`choreo-static-check` en `lint.yml`. Sin nuevas runtime deps. Cierre
+completo: [snapshot/PHASE_04_1_CLOSURE.md](snapshot/PHASE_04_1_CLOSURE.md).
+Decisión de arquitectura: [ADR-008](docs/adr/ADR-008-choreo-static-fsm-verification.md).
+
+---
+
+## FASE 4.2 — `choreo` v0.2: reified + auto-derive — **CERRADA** 🟢
+**Objetivo**: Cuatro mejoras additivas a `choreo` y al subpaquete
+`state_machines/`: walker patterns ampliados (setattr + replace),
+reified transitions decorator (`@transition`), auto-derive subcommand,
+opt-in enum binding.
+**Duración**: 1 día
+**Tag al cerrar**: `v1.4.2-phase04.2` — cierre 2026-04-25
+
+**Resultado**: 734 tests pasando (+29 vs Phase 4.1: 8 walker + 4
+enum_name + 6 derive + 11 reified). 5 walker patterns soportados (vs
+3 en 4.1). 4 métodos reified en `HiveTask` (claim/complete/fail/retry)
+como API additiva. `python -m choreo derive` genera skeletons desde
+código. `cell_fsm.py` y `task_fsm.py` con `enum_name=` explícito.
+choreo aplicado a HOC sigue produciendo el reporte exacto de Phase 4.1
+(0 err / 2 warn / 3 info), confirmando que ninguna feature rompe el
+contrato. Sin nuevas runtime deps. Bandit/pip-audit/ruff/black/mypy
+limpios. Cierre completo:
+[snapshot/PHASE_04_2_CLOSURE.md](snapshot/PHASE_04_2_CLOSURE.md).
+Decisión de arquitectura:
+[ADR-009](docs/adr/ADR-009-reified-transitions-and-auto-derive.md).
+
+### Diferido a Phase 5+
+- Walker patterns adicionales (`attrs.evolve`, RHS computado, etc.).
+- `--strict` CI flip espera el wire-up de los reservados (Phase 5).
+- Auto-derive con CFG analysis (sources reales) — research-grade,
+  deferred indefinidamente.
+
+---
+
+## FASE 4.3 — Dead enum cleanup — **CERRADA** 🟢
+**Objetivo**: Mini-fase de cleanup que aplica per-member la
+discriminación "eliminar vs reservar" sobre los dead enum members
+detectados por choreo en Phase 4.1/4.2.
+**Duración**: 1 día (~2h)
+**Tag al cerrar**: `v1.4.3-phase04.3` — cierre 2026-04-25
+
+**Resultado**: choreo reduce warnings de 2 a 1.
+
+- **Eliminados**: `TaskState.ASSIGNED`, `CellState.SPAWNING`,
+  `CellState.OVERLOADED` (sin caso de uso real).
+- **Reservados (Phase 5)**: `CellState.MIGRATING` (wire-up en
+  `CellFailover.migrate_cell` para observabilidad), `CellState.SEALED`
+  (wire-up para graceful shutdown).
+- 733 tests pasando (-1 vs Phase 4.2: test obsoleto B12-bis eliminado).
+- ruff/black/mypy/bandit/pip-audit limpios.
+
+Cierre completo: [snapshot/PHASE_04_3_CLOSURE.md](snapshot/PHASE_04_3_CLOSURE.md).
+Decisión de arquitectura: [ADR-010](docs/adr/ADR-010-dead-enum-cleanup.md).
+
+### Pendiente para Phase 5
+- Wire-up de `CellState.MIGRATING` y `CellState.SEALED`.
+- Wire-up de las 3 FSMs declarative-only (Pheromone, Succession,
+  Failover).
+- Tras lo anterior, flippear `--strict` en el job CI choreo.
+
+---
+
+## FASE 5 — Observabilidad — **CERRADA** 🟢
+**Objetivo**: Visibilidad operacional production-grade + cierre del
+gap "FSM declarada pero no wireada" de Phase 4 / 4.3.
+**Duración real**: 1 sesión
+**Tag al cerrar**: `v1.5.0-phase05` — cierre 2026-04-26
+
+**Resultado**: 804 tests pasando (+71 vs Phase 4.3), cobertura
+**79.41%** (+~3 pts), **5/5 FSMs wireadas** (vs 2/5 al inicio):
+Phase 5.1 wireó CellState.MIGRATING + SEALED en CellFailover +
+nuevo `cell.seal()`; Phase 5.2c wireó FailoverFlow vía
+`_FailoverCellState` wrapper + tramoya `undo()`; Phase 5.2a wireó
+PheromoneDeposit como static field (perf budget +1.4% vs <3%);
+Phase 5.2b wireó QueenSuccession vía `_SuccessionState` wrapper sin
+tocar lógica de quorum (7 tests TestQuorumSignedVotes intactos).
+Phase 5.3 introdujo logging estructurado vía `structlog` con 6
+eventos cableados. Phase 5.5 capturó `bench_baseline.json`
+reproducible + `compare_bench.py` + nuevo job CI `bench-regression`.
+Phase 5.6 flippeó `choreo check --strict` en CI — el report quedó
+en **0/0/0** y CI rompe en cualquier futuro PR con dead state /
+enum-extra / declarative-only FSM. Bandit 0/0/0 mantenido. Cierre
+completo: [snapshot/PHASE_05_CLOSURE.md](snapshot/PHASE_05_CLOSURE.md).
+Decisiones de arquitectura:
+[ADR-011](docs/adr/ADR-011-observability-stack.md) (observability
+stack), [ADR-012](docs/adr/ADR-012-choreo-strict-mode.md) (`--strict`
+flip).
+
+### Diferido a Phase 5.x followup / Phase 6
+- 5.4 Métricas Prometheus + `/metrics` endpoint + `hoc-cli serve-metrics`
+  (explícitamente opcional per brief; structured logs de 5.3 cubren
+  caso interim vía promtail / fluent-bit log-derived metrics).
+- 5.7 Dashboard (FastAPI + HTMX + Mermaid live) — explícitamente
+  opcional, deferido a Phase 6.
+- Cobertura 80% target (cerró 79.41%, falta -0.59 pts; `bridge.py`
+  56% sigue siendo el cuello).
+- `test_grid_creation` +25.88% regresión vs baseline (FSM allocation
+  per-cell); documentado para optimizar en Phase 5.x followup.
+
+### Scope original (planeado)
+**Objetivo planeado**: Visibilidad operacional production-grade. **Integración de [trame](https://kitware.github.io/trame/)** (asumiendo que "tramoya" del usuario era trame para dashboards) — opcional, ver nota.
+**Duración estimada**: 3 semanas
 **Tag al cerrar**: `v1.5.0-phase05`
 
 > **Nota**: tramoya (state machines) ya se usa en Fase 4. Para el dashboard interactivo proponemos **trame** (Kitware). Si prefieres otro stack (Streamlit/Plotly Dash/FastAPI+HTMX), ajustar aquí.
@@ -327,9 +454,50 @@ architect = "my_pkg.behaviors:ArchitectBehavior"
 
 ---
 
-## FASE 6 — Persistencia & Storage
+## FASE 6 — Persistencia & Storage — **CERRADA** 🟢
 **Objetivo**: HoneyArchive con backends reales; recovery completo tras crash.
-**Duración**: 3-4 semanas
+**Duración real**: 1 sesión
+**Tag al cerrar**: `v1.6.0-phase06` — cierre 2026-04-27
+
+**Resultado**: 961 tests pasando (+157 vs Phase 5), cobertura
+**83.08 %** (+3.67 pts), nuevo subpaquete `hoc.storage` con
+`StorageBackend` Protocol + `MemoryBackend` default + `SQLiteBackend`
+(WAL + schema versioning + connection-per-thread, stdlib only).
+`HoneycombGrid.checkpoint(path)` y `restore_from_checkpoint(path)`
+serializan/deserializan vía blob HMAC-firmado (encode_blob /
+decode_blob); auto-checkpointing opt-in dentro del tick loop con
+RPO acotado por `checkpoint_interval_ticks`. Phase 6.5 splittea
+`bridge.py` (886 LOC, último top-level legacy ≥ 800 LOC) en
+`hoc.bridge` subpaquete (3 módulos), empujando bridge cobertura de
+56 % a 96 % y cerrando Gap 4 desde Phase 4 closure. Phase 6.6
+introduce class-level shared FSM en `HoneycombCell` que cierra la
+regresión Phase 5 `test_grid_creation` (-66.47 % vs baseline, target
+era ±5 %). Phase 6.7 captura el bench baseline en `ubuntu-latest`
+vía `workflow_dispatch` desde main; `bench-regression` CI job vuelve
+a hard-fail mode con threshold 10 % (el advisory 50 % de Phase 5.5
+se elimina). Bandit 0/0/0 mantenido. choreo `--strict` 0/0/0
+mantenido. Sin nuevas runtime deps (sqlite3 + zlib son stdlib).
+Cierre completo: [snapshot/PHASE_06_CLOSURE.md](snapshot/PHASE_06_CLOSURE.md).
+Decisiones de arquitectura:
+[ADR-013](docs/adr/ADR-013-storage-backend-abstraction.md) (storage
+backend abstraction),
+[ADR-014](docs/adr/ADR-014-checkpoint-format.md) (checkpoint format),
+[ADR-015](docs/adr/ADR-015-class-level-cell-fsm.md) (class-level
+FSM optimization).
+
+### Diferido a Phase 6.x followup / Phase 7+
+- 6.9 Backends adicionales (LMDB / S3 / Redis) — opcional per brief.
+  Spec en ADR-013.
+- 6.10 Phase 5.4 (Prometheus) + 5.7 (dashboard) carryover — opcional.
+- Task queue persistence — `SwarmScheduler.task_queue` no incluido
+  en checkpoint v1; diferido a Phase 7 async migration.
+- CombStorage backend — deliberadamente in-memory; revisitar si
+  Phase 8 demanda shared L2.
+
+### Scope original (planeado)
+
+**Objetivo planeado**: HoneyArchive con backends reales; recovery completo tras crash.
+**Duración estimada**: 3-4 semanas
 **Tag al cerrar**: `v1.6.0-phase06`
 
 ### Backends pluggables
@@ -367,9 +535,53 @@ architect = "my_pkg.behaviors:ArchitectBehavior"
 
 ---
 
-## FASE 7 — Async/Await & Performance
+## FASE 7 — Async/Await & Performance — **CERRADA** 🟢 ⚠️ MAJOR
 **Objetivo**: Throughput 5-10× mejor; sandboxing real de tareas.
-**Duración**: 4-5 semanas
+**Duración real**: 1 sesión
+**Tag al cerrar**: `v2.0.0-phase07` ⚠️ **PRIMER MAJOR BUMP DEL ROADMAP** — cierre 2026-04-28
+
+**Resultado**: 1062 tests pasando (+101 vs Phase 6), cobertura
+**83.47 %** local Windows (CI Linux esperado ≥ 85 % cuando los 8 tests
+fork-only del sandbox corren). Las cuatro clases user-facing
+— ``HoneycombGrid``, ``NectarFlow``, ``SwarmScheduler``,
+``HoneycombCell`` — exponen ``async def tick`` / ``async def
+execute_tick`` desde v2.0.0; los wrappers ``run_tick_sync`` /
+``run_execute_tick_sync`` quedan como migration aid hasta v3.0.0.
+Phase 7.5 BehaviorIndex (O(n·m) → O(m·log n)) reduce el filter loop
+de ~34k ops/tick a ~220 ops/tick — bench
+``test_swarm_1000_tasks_single_tick`` ≈ 1.7 ms (≈ **6× speedup** vs
+extrapolated baseline; brief target ≥5× cumplido). Phase 7.4
+SandboxedTaskRunner aterriza process isolation opt-in en POSIX (fork);
+Windows deferred a Phase 7.x followup. Phase 7.10 cierra el gap
+diferido de Phase 6.4: ``SwarmScheduler.task_queue`` persiste en
+checkpoint v2 (``encode_blob`` siempre escribe 0x02; ``decode_blob``
+acepta ambos vía ``SUPPORTED_VERSIONS``). Bandit 0/0/0 mantenido.
+choreo ``--strict`` 0/0/0 mantenido. Sin nuevas runtime deps. Cierre
+completo: [snapshot/PHASE_07_CLOSURE.md](snapshot/PHASE_07_CLOSURE.md).
+Decisiones de arquitectura:
+[ADR-016](docs/adr/ADR-016-async-tick-loop.md) (async tick),
+[ADR-017](docs/adr/ADR-017-sandboxing-model.md) (sandboxing),
+[ADR-018](docs/adr/ADR-018-behavior-index.md) (BehaviorIndex).
+
+### Diferido a Phase 7.x followup / Phase 9
+- 7.7 Cython extensions — DoD permite "deferred a Phase 9".
+- 7.9 Comparative benchmarks (HOC vs Ray / Dask / multiprocessing)
+  — deferred; necesita dev deps Ray/Dask + harness comparativo.
+- 7.11 cobertura ≥85 % global — CI Linux esperado ≥85 % post-merge.
+- 7.12 Phase 5.4 Prometheus + 5.7 Dashboard carryover — opcional
+  per brief; deferred a Phase 8 si emerge demanda observabilidad
+  cross-node.
+- Sandbox process isolation on Windows — Phase 7.x followup
+  (spawn + cloudpickle o subprocess).
+- Sandbox cgroup v2 / Job Objects (full impls) — Phase 7.x followup;
+  stubs raise ``SandboxNotSupported``.
+- CI bench baseline refresh — ``gh workflow run bench.yml`` post-merge,
+  mismo recipe Phase 6.7.
+
+### Scope original (planeado)
+
+**Objetivo planeado**: Throughput 5-10× mejor; sandboxing real de tareas.
+**Duración estimada**: 4-5 semanas
 **Tag al cerrar**: `v2.0.0-phase07` ⚠️ **breaking change** (API async)
 
 ### Async migration

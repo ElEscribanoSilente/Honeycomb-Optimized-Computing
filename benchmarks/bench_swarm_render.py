@@ -76,7 +76,7 @@ def run_swarm_render_benchmark(
     for _ in range(max_ticks):
         if scheduler.get_pending_count() == 0:
             break
-        res = scheduler.tick()
+        res = scheduler.run_tick_sync()
         tick_results.append(res)
     elapsed = time.perf_counter() - start
 

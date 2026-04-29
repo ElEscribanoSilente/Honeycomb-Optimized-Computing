@@ -145,7 +145,7 @@ class TestNectarFlow:
     def test_tick(self, grid):
         """tick ejecuta sin fallar."""
         nectar = NectarFlow(grid)
-        results = nectar.tick()
+        results = nectar.run_tick_sync()
         assert "pheromones_evaporated" in results or "dances_propagated" in results
 
 

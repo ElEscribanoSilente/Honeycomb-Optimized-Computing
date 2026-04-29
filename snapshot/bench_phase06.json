@@ -1,0 +1,294 @@
+{
+  "benchmarks": [
+    {
+      "fullname": "benchmarks/bench_core.py::test_hexcoord_creation",
+      "group": null,
+      "name": "test_hexcoord_creation",
+      "stats": {
+        "iqr": 5.411465149859253e-09,
+        "max": 4.244446876933323e-07,
+        "mean": 4.212136183984383e-07,
+        "median": 4.202803222150858e-07,
+        "min": 4.180493706753927e-07,
+        "rounds": 5,
+        "stddev": 2.9419280798147456e-09
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_core.py::test_hexcoord_neighbor",
+      "group": null,
+      "name": "test_hexcoord_neighbor",
+      "stats": {
+        "iqr": 3.1355500009339775e-09,
+        "max": 5.786232999998902e-07,
+        "mean": 5.719815399999789e-07,
+        "median": 5.703501000007236e-07,
+        "min": 5.696669999997539e-07,
+        "rounds": 5,
+        "stddev": 3.757647326853268e-09
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_core.py::test_hexcoord_distance",
+      "group": null,
+      "name": "test_hexcoord_distance",
+      "stats": {
+        "iqr": 3.3435560385970257e-09,
+        "max": 2.8117330241932624e-07,
+        "mean": 2.763316260925371e-07,
+        "median": 2.76268859882528e-07,
+        "min": 2.728811764679718e-07,
+        "rounds": 5,
+        "stddev": 3.0687395195085884e-09
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_core.py::test_grid_creation",
+      "group": null,
+      "name": "test_grid_creation",
+      "stats": {
+        "iqr": 5.798689999983258e-05,
+        "max": 0.0008089927000000898,
+        "mean": 0.0006814627800005837,
+        "median": 0.0006490265000011277,
+        "min": 0.0006386474000009912,
+        "rounds": 5,
+        "stddev": 7.198347446729934e-05
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_core.py::test_grid_tick",
+      "group": null,
+      "name": "test_grid_tick",
+      "stats": {
+        "iqr": 1.3375261656605928e-05,
+        "max": 0.0005312965746914321,
+        "mean": 0.0005041965746909812,
+        "median": 0.00049923139866848,
+        "min": 0.0004925000951479057,
+        "rounds": 5,
+        "stddev": 1.5510984693584957e-05
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_core.py::test_ring_iteration",
+      "group": null,
+      "name": "test_ring_iteration",
+      "stats": {
+        "iqr": 4.239853683440537e-09,
+        "max": 2.8181753286897625e-07,
+        "mean": 2.7579800166994204e-07,
+        "median": 2.764549975554325e-07,
+        "min": 2.6806084328746225e-07,
+        "rounds": 5,
+        "stddev": 4.941213082454226e-09
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_nectar.py::test_pheromone_deposit",
+      "group": null,
+      "name": "test_pheromone_deposit",
+      "stats": {
+        "iqr": 3.904012500015558e-08,
+        "max": 1.9326677999997626e-06,
+        "mean": 1.8928612599996995e-06,
+        "median": 1.8952539999991132e-06,
+        "min": 1.857219299999997e-06,
+        "rounds": 5,
+        "stddev": 2.847826792002645e-08
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_nectar.py::test_pheromone_sense",
+      "group": null,
+      "name": "test_pheromone_sense",
+      "stats": {
+        "iqr": 9.453199999825293e-08,
+        "max": 1.5325152999994316e-06,
+        "mean": 1.4614881200002855e-06,
+        "median": 1.4789376000007905e-06,
+        "min": 1.3662893000000621e-06,
+        "rounds": 5,
+        "stddev": 6.505638837912271e-08
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_nectar.py::test_nectar_flow_tick",
+      "group": null,
+      "name": "test_nectar_flow_tick",
+      "stats": {
+        "iqr": 1.928675000090147e-07,
+        "max": 5.785551000008127e-06,
+        "mean": 5.655443200004811e-06,
+        "median": 5.685668000005535e-06,
+        "min": 5.509371999996802e-06,
+        "rounds": 5,
+        "stddev": 1.1500932255620745e-07
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_nectar.py::test_dance_start",
+      "group": null,
+      "name": "test_dance_start",
+      "stats": {
+        "iqr": 2.239967500004242e-06,
+        "max": 2.3475087999995594e-05,
+        "mean": 2.202303380000376e-05,
+        "median": 2.128358500000104e-05,
+        "min": 2.0950122000012924e-05,
+        "rounds": 5,
+        "stddev": 1.2421493337735787e-06
+      }
+    },
+    {
+      "fullname": "benchmarks/bench_swarm_render.py::test_swarm_render_heavy",
+      "group": null,
+      "name": "test_swarm_render_heavy",
+      "stats": {
+        "iqr": 2.489952499990978e-09,
+        "max": 7.455933000001096e-08,
+        "mean": 7.154410800001643e-08,
+        "median": 7.153557000001456e-08,
+        "min": 6.894573999998102e-08,
+        "rounds": 5,
+        "stddev": 2.0600933014054095e-09
+      }
+    }
+  ],
+  "commit_info": {
+    "author_time": "2026-04-27T06:36:09-06:00",
+    "branch": "phase/06-persistence",
+    "dirty": false,
+    "id": "62399744de43b680c097ae202bad05ccfef720a3",
+    "project": "Honeycomb-Optimized-Computing",
+    "time": "2026-04-27T06:36:09-06:00"
+  },
+  "datetime": "2026-04-27T12:40:34.226411+00:00",
+  "machine_info": {
+    "cpu": {
+      "arch": "X86_64",
+      "arch_string_raw": "AMD64",
+      "bits": 64,
+      "brand_raw": "AMD Ryzen 5 5600G with Radeon Graphics",
+      "count": 10,
+      "cpuinfo_version": [
+        9,
+        0,
+        0
+      ],
+      "cpuinfo_version_string": "9.0.0",
+      "family": 25,
+      "flags": [
+        "3dnow",
+        "3dnowprefetch",
+        "abm",
+        "adx",
+        "aes",
+        "apic",
+        "avx",
+        "avx2",
+        "bmi1",
+        "bmi2",
+        "clflush",
+        "clflushopt",
+        "clwb",
+        "cmov",
+        "cmp_legacy",
+        "cr8_legacy",
+        "cx16",
+        "cx8",
+        "de",
+        "dts",
+        "erms",
+        "f16c",
+        "fma",
+        "fpu",
+        "fxsr",
+        "ht",
+        "hypervisor",
+        "ia64",
+        "invpcid",
+        "lahf_lm",
+        "lm",
+        "mca",
+        "mce",
+        "misalignsse",
+        "mmx",
+        "monitor",
+        "movbe",
+        "msr",
+        "mtrr",
+        "osvw",
+        "osxsave",
+        "pae",
+        "pat",
+        "pclmulqdq",
+        "perfctr_core",
+        "pge",
+        "pni",
+        "popcnt",
+        "pqe",
+        "pqm",
+        "pse",
+        "pse36",
+        "rdpid",
+        "rdrnd",
+        "rdseed",
+        "sep",
+        "sepamd",
+        "serial",
+        "sha",
+        "smap",
+        "smep",
+        "ss",
+        "sse",
+        "sse2",
+        "sse4_1",
+        "sse4_2",
+        "sse4a",
+        "ssse3",
+        "tm",
+        "topoext",
+        "tsc",
+        "umip",
+        "vaes",
+        "vme",
+        "vpclmulqdq",
+        "wdt",
+        "x2apic",
+        "xsave"
+      ],
+      "hz_actual": [
+        4200000000,
+        0
+      ],
+      "hz_actual_friendly": "4.2000 GHz",
+      "hz_advertised": [
+        4200000000,
+        0
+      ],
+      "hz_advertised_friendly": "4.2000 GHz",
+      "l2_cache_associativity": 6,
+      "l2_cache_line_size": 512,
+      "l2_cache_size": 2621440,
+      "l3_cache_size": 16777216,
+      "model": 80,
+      "python_version": "3.13.2.final.0 (64 bit)",
+      "vendor_id_raw": "AuthenticAMD"
+    },
+    "machine": "AMD64",
+    "node": "DESKTOP-QFSC49G",
+    "processor": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+    "python_build": [
+      "tags/v3.13.2:4f8bb39",
+      "Feb  4 2025 15:23:48"
+    ],
+    "python_compiler": "MSC v.1942 64 bit (AMD64)",
+    "python_implementation": "CPython",
+    "python_implementation_version": "3.13.2",
+    "python_version": "3.13.2",
+    "release": "11",
+    "system": "Windows"
+  },
+  "version": "5.1.0"
+}

@@ -105,7 +105,7 @@ class TestHoneycombGrid:
     def test_tick(self):
         """El grid puede ejecutar un tick sin fallar."""
         grid = HoneycombGrid()
-        grid.tick()
+        grid.run_tick_sync()
         assert grid.cell_count > 0
 
 

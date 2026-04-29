@@ -45,17 +45,21 @@ Flujo de datos:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import threading
 import time
+import warnings
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import (
     Any,
+    ClassVar,
     TypeVar,
+    cast,
 )
 
 import mscs as _mscs
@@ -114,6 +118,36 @@ class PheromoneType(Enum):
         return rates.get(self, 0.1)
 
 
+class PheromonePhase(Enum):
+    """Phase 5.2a: lifecycle phase of a :class:`PheromoneDeposit`.
+
+    Mirrors the states of the PheromoneDeposit FSM in
+    :mod:`hoc.state_machines.pheromone_fsm`. Per the perf budget
+    documented in ADR-007 (and re-stated in Phase 5's brief), this is a
+    **static-only** wire-up: ``PheromoneDeposit`` carries a ``state``
+    field that ``PheromoneTrail.evaporate`` and ``diffuse_to_neighbors``
+    update inside their existing loops, but no per-instance FSM is
+    allocated and no runtime guard validation happens. The FSM in
+    ``state_machines/`` remains the documentation source of truth and
+    the property-test target.
+
+    Values are the FSM state strings so a future runtime wire-up can use
+    ``transition_to(phase.value)`` if performance ever tolerates it.
+    """
+
+    FRESH = "FRESH"
+    DECAYING = "DECAYING"
+    DIFFUSING = "DIFFUSING"
+    EVAPORATED = "EVAPORATED"
+
+
+# Phase 5.2a: age boundary between FRESH and DECAYING. Must match the
+# default in ``hoc.state_machines.pheromone_fsm.DEFAULT_FRESHNESS_WINDOW``
+# (kept duplicated to avoid importing from state_machines in this hot
+# module — the constant is small and unlikely to drift).
+PHEROMONE_FRESHNESS_WINDOW: float = 5.0
+
+
 @dataclass
 class PheromoneDeposit:
     """
@@ -122,6 +156,12 @@ class PheromoneDeposit:
     Phase 2: soporta firma HMAC-SHA256 sobre los campos de identidad
     inmutables (``ptype``, ``source``, timestamp original). ``intensity``
     NO forma parte del HMAC porque varía con deposits, decay y diffusion.
+
+    Phase 5.2a: el campo ``state`` mantiene la fase del lifecycle
+    (FRESH/DECAYING/DIFFUSING/EVAPORATED). Set por
+    ``PheromoneTrail.evaporate`` y ``diffuse_to_neighbors``; no entra
+    por la FSM en runtime — es un mirror del estado real para
+    observabilidad + detección estática vía choreo.
     """
 
     ptype: PheromoneType
@@ -130,6 +170,10 @@ class PheromoneDeposit:
     source: HexCoord | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     signature: bytes | None = None  # HMAC-SHA256 sobre identity fields
+    # Phase 5.2a: lifecycle phase mirror. Default FRESH; transitions
+    # happen in PheromoneTrail's evaporate/diffuse loops without
+    # per-instance FSM allocation (perf-critical path).
+    state: PheromonePhase = PheromonePhase.FRESH
 
     def decay(self, elapsed: float) -> float:
         """Aplica decaimiento basado en tiempo transcurrido."""
@@ -148,12 +192,15 @@ class PheromoneDeposit:
         no inmutabilidad de valor.
         """
         src = (self.source.q, self.source.r) if self.source is not None else None
-        return _mscs.dumps(
-            {
-                "kind": "pheromone",
-                "ptype": self.ptype.value,
-                "source": src,
-            }
+        return cast(
+            bytes,
+            _mscs.dumps(
+                {
+                    "kind": "pheromone",
+                    "ptype": self.ptype.value,
+                    "source": src,
+                }
+            ),
         )
 
     def sign(self, key: bytes | None = None) -> PheromoneDeposit:
@@ -271,7 +318,7 @@ class PheromoneTrail:
         ptype: PheromoneType,
         intensity: float,
         source: HexCoord | None = None,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> float:
         """
         Deposita feromona en una coordenada.
@@ -308,6 +355,12 @@ class PheromoneTrail:
                     source=source,
                     metadata={},
                 )
+                # Phase 5.2a: explicit FRESH assignment (the dataclass
+                # default is FRESH already, but choreo's walker only
+                # detects ``obj.state = ENUM.MEMBER`` Assign nodes and
+                # not AnnAssign defaults — this statement makes FRESH a
+                # targeted state in the static analysis).
+                new_deposit.state = PheromonePhase.FRESH
                 if metadata:
                     self._merge_metadata_bounded(new_deposit, metadata)
                 # Phase 2: firmar en creación. Verificaciones downstream
@@ -435,9 +488,17 @@ class PheromoneTrail:
                     ):
                         deposit.intensity *= 0.5
 
-                    # Marcar para eliminación si es muy bajo
+                    # Phase 5.2a: lifecycle phase mirror. Below the cleanup
+                    # threshold the deposit is queued for removal — mark
+                    # EVAPORATED (terminal). Once age crosses the freshness
+                    # window we leave FRESH for DECAYING. The two attribute
+                    # writes per deposit are the entire perf budget for
+                    # this wire-up; no FSM is consulted.
                     if deposit.intensity < self.CLEANUP_THRESHOLD:
+                        deposit.state = PheromonePhase.EVAPORATED
                         dead_types.append(ptype)
+                    elif elapsed > PHEROMONE_FRESHNESS_WINDOW:
+                        deposit.state = PheromonePhase.DECAYING
 
                 for ptype in dead_types:
                     del deposits[ptype]
@@ -477,12 +538,19 @@ class PheromoneTrail:
         spread_per_neighbor = diffusion_rate / 6.0
         with self._lock:
             new_deposits: list[
-                tuple[HexCoord, PheromoneType, float, HexCoord | None, dict | None]
+                tuple[HexCoord, PheromoneType, float, HexCoord | None, dict[str, Any] | None]
             ] = []
             for coord, deposits in self._deposits.items():
                 for ptype, deposit in list(deposits.items()):
                     if deposit.intensity < threshold:
                         continue
+                    # Phase 5.2a: transient DIFFUSING during the spread,
+                    # then back to DECAYING once the deposit's intensity
+                    # has been fanned out. The original deposit's intensity
+                    # is unchanged here (the spread happens via deposit()
+                    # below on neighbours), so DECAYING is the right
+                    # post-spread phase.
+                    deposit.state = PheromonePhase.DIFFUSING
                     amount = deposit.intensity * spread_per_neighbor
                     for direction in HexDirection:
                         neighbor_coord = coord.neighbor(direction)
@@ -497,6 +565,7 @@ class PheromoneTrail:
                                 None,
                             )
                         )
+                    deposit.state = PheromonePhase.DECAYING
             for coord, ptype, intensity, source, meta in new_deposits:
                 self.deposit(coord, ptype, intensity, source=source, metadata=meta)
         return len(new_deposits)
@@ -539,7 +608,7 @@ class PheromoneTrail:
                 d.intensity for deposits in self._deposits.values() for d in deposits.values()
             )
 
-            by_type = defaultdict(float)
+            by_type: defaultdict[str, float] = defaultdict(float)
             for deposits in self._deposits.values():
                 for ptype, deposit in deposits.items():
                     by_type[ptype.name] += deposit.intensity
@@ -622,15 +691,18 @@ class DanceMessage:
 
     def _canonical_payload(self) -> bytes:
         """Bytes estables para HMAC. Excluye ``quality`` y ``ttl`` mutables."""
-        return _mscs.dumps(
-            {
-                "kind": "dance",
-                "source": (self.source.q, self.source.r),
-                "direction": self.direction.value,
-                "distance": self.distance,
-                "resource_type": self.resource_type,
-                "timestamp": round(self.timestamp, 6),
-            }
+        return cast(
+            bytes,
+            _mscs.dumps(
+                {
+                    "kind": "dance",
+                    "source": (self.source.q, self.source.r),
+                    "direction": self.direction.value,
+                    "distance": self.distance,
+                    "resource_type": self.resource_type,
+                    "timestamp": round(self.timestamp, 6),
+                }
+            ),
         )
 
     def sign(self, key: bytes | None = None) -> DanceMessage:
@@ -707,7 +779,7 @@ class WaggleDance:
         distance: int,
         quality: float,
         resource_type: str = "generic",
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> DanceMessage:
         """
         Inicia una danza en la coordenada especificada.
@@ -870,7 +942,7 @@ class WaggleDance:
         """Obtiene estadísticas del sistema de danza."""
         with self._lock:
             total_dances = sum(len(d) for d in self._active_dances.values())
-            by_type = defaultdict(int)
+            by_type: defaultdict[str, int] = defaultdict(int)
 
             for dances in self._active_dances.values():
                 for dance in dances:
@@ -933,16 +1005,19 @@ class RoyalMessage:
         # params se incluye serializado canónicamente vía mscs para detectar
         # manipulación de argumentos (p.e. atacante cambia ``target_radius``
         # en un EVACUATE para ampliar el área evacuada).
-        return _mscs.dumps(
-            {
-                "kind": "royal",
-                "command": self.command.value,
-                "priority": self.priority,
-                "target": target,
-                "issuer": issuer,
-                "timestamp": round(self.timestamp, 6),
-                "params": self.params,
-            }
+        return cast(
+            bytes,
+            _mscs.dumps(
+                {
+                    "kind": "royal",
+                    "command": self.command.value,
+                    "priority": self.priority,
+                    "target": target,
+                    "issuer": issuer,
+                    "timestamp": round(self.timestamp, 6),
+                    "params": self.params,
+                }
+            ),
         )
 
     def sign(self, key: bytes | None = None) -> RoyalMessage:
@@ -1005,7 +1080,7 @@ class RoyalJelly:
         command: RoyalCommand,
         priority: int = 5,
         target: HexCoord | None = None,
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
         *,
         issuer: HexCoord | None = None,
     ) -> RoyalMessage:
@@ -1098,7 +1173,7 @@ class RoyalJelly:
             Lista de comandos aplicables
         """
         with self._lock:
-            applicable = []
+            applicable: list[RoyalMessage] = []
             for cmd in self._pending_commands:
                 if len(applicable) >= limit:
                     break
@@ -1140,7 +1215,7 @@ class RoyalJelly:
     def emergency_broadcast(
         self,
         message: str,
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
         *,
         issuer: HexCoord | None = None,
     ) -> None:
@@ -1170,10 +1245,13 @@ class RoyalJelly:
                 "pending_commands": len(self._pending_commands),
                 "subscribers": len(self._subscribers),
                 "history_size": len(self._command_history),
+                # B12 fix (Phase 4): ``cmd`` here iterates RoyalCommand enum
+                # members directly. The previous code referenced ``cmd.command``
+                # (an attribute the enum does not have) which would AttributeError
+                # at runtime; mypy strict on this file caught it. Use ``cmd``
+                # itself for both the dict key (its name) and the equality check.
                 "commands_by_type": {
-                    cmd.command.name: sum(
-                        1 for c in self._pending_commands if c.command == cmd.command
-                    )
+                    cmd.name: sum(1 for c in self._pending_commands if c.command == cmd)
                     for cmd in RoyalCommand
                 },
             }
@@ -1200,7 +1278,7 @@ class NectarChannel:
     name: str
     priority: NectarPriority
     buffer_size: int = 1000
-    _queue: deque = field(default_factory=lambda: deque(maxlen=1000))
+    _queue: deque[Any] = field(default_factory=lambda: deque(maxlen=1000))
 
 
 class NectarFlow:
@@ -1239,7 +1317,7 @@ class NectarFlow:
     # ─────────────────────────────────────────────────────────────────────────
 
     def deposit_pheromone(
-        self, coord: HexCoord, ptype: PheromoneType, intensity: float, **kwargs
+        self, coord: HexCoord, ptype: PheromoneType, intensity: float, **kwargs: Any
     ) -> float:
         """Deposita feromona en una coordenada."""
         return self._pheromones.deposit(coord, ptype, intensity, **kwargs)
@@ -1263,7 +1341,7 @@ class NectarFlow:
         distance: int,
         quality: float,
         resource_type: str = "generic",
-        **kwargs,
+        **kwargs: Any,
     ) -> DanceMessage:
         """Inicia una danza."""
         return self._dance.start_dance(
@@ -1283,7 +1361,7 @@ class NectarFlow:
         command: RoyalCommand,
         priority: int = 5,
         target: HexCoord | None = None,
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
         *,
         issuer: HexCoord | None = None,
     ) -> RoyalMessage:
@@ -1307,15 +1385,28 @@ class NectarFlow:
     # SISTEMA GLOBAL
     # ─────────────────────────────────────────────────────────────────────────
 
-    def tick(self) -> dict[str, Any]:
-        """
-        Ejecuta un tick del sistema de comunicación (orden: decaimiento → difusión → danzas).
+    # Phase 7.2: one-shot guard so ``run_tick_sync`` emits its
+    # DeprecationWarning only the first time it's called per process.
+    _SYNC_DEPRECATION_EMITTED: ClassVar[bool] = False
 
-        - Evapora feromonas (decaimiento)
-        - Difunde feromonas a los 6 vecinos hexagonales (si diffusion_rate > 0)
-        - Propaga danzas waggle
-        - Procesa cola de comandos reales
+    async def tick(self) -> dict[str, Any]:
+        """Phase 7.1: async tick.
+
+        Pheromone decay / diffusion + waggle dance propagation are
+        CPU-light but holds the lock for the entire pass; we dispatch
+        the body to ``asyncio.to_thread`` so the event loop stays
+        responsive when many flows tick concurrently (e.g. a
+        multi-grid simulation in Phase 8).
+
+        Order preserved: decay → diffusion → dance propagation → old
+        dance cleanup → command count.
         """
+        return await asyncio.to_thread(self._sync_tick)
+
+    def _sync_tick(self) -> dict[str, Any]:
+        """Phase 7.1: the pre-Phase-7.1 ``tick`` body, kept synchronous
+        so :class:`PheromoneTrail` and :class:`WaggleDance` locking
+        works without async re-plumbing."""
         results = {
             "pheromones_evaporated": 0,
             "pheromones_diffused": 0,
@@ -1344,6 +1435,33 @@ class NectarFlow:
         results["commands_pending"] = self._royal.get_pending_count()
 
         return results
+
+    def run_tick_sync(self) -> dict[str, Any]:
+        """Phase 7.2: blocking wrapper for legacy sync callers.
+
+        Equivalent to ``asyncio.run(self.tick())``. Emits
+        :class:`DeprecationWarning` once per process. Raises
+        ``RuntimeError`` if called from inside a running loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "NectarFlow.run_tick_sync called from a running event loop; "
+                "use 'await flow.tick()' instead."
+            )
+        if not NectarFlow._SYNC_DEPRECATION_EMITTED:
+            warnings.warn(
+                "NectarFlow.run_tick_sync is a v1→v2 migration aid; switch "
+                "callers to 'await flow.tick()'. This wrapper will be "
+                "removed in HOC v3.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            NectarFlow._SYNC_DEPRECATION_EMITTED = True
+        return self._sync_tick()
 
     def get_stats(self) -> dict[str, Any]:
         """Obtiene estadísticas consolidadas."""

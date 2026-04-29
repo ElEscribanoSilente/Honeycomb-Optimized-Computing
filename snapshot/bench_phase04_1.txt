@@ -1,0 +1,35 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.2, pytest-9.0.3, pluggy-1.5.0
+benchmark: 5.1.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: D:\HOC
+configfile: pyproject.toml
+plugins: anyio-4.9.0, dash-2.9.3, hypothesis-6.151.11, asyncio-1.1.0, benchmark-5.1.0, cov-6.1.1, mock-3.15.1, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 14 items
+
+benchmarks\bench_core.py ......                                          [ 42%]
+benchmarks\bench_heavy_mixed.py ss                                       [ 57%]
+benchmarks\bench_nectar.py ....                                          [ 85%]
+benchmarks\bench_swarm_render.py .s                                      [100%]
+
+
+----------------------------------------------------------------------- benchmark: 11 tests -----------------------------------------------------------------------
+Name (time in ns)                      Min                      Mean                  StdDev                    Median                        Max            Rounds
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+test_swarm_render_heavy            54.0000 (1.0)             57.3210 (1.0)            9.0706 (1.0)             56.0000 (1.0)           1,495.0000 (1.0)      175439
+test_hexcoord_distance            239.9999 (4.44)           267.5354 (4.67)          50.5590 (5.57)           260.0000 (4.64)          2,910.0000 (1.95)     181819
+test_ring_iteration               299.9986 (5.56)           359.4995 (6.27)         123.8123 (13.65)          399.9994 (7.14)         11,399.9995 (7.63)      34844
+test_hexcoord_creation            399.9994 (7.41)           483.3229 (8.43)         187.2034 (20.64)          500.0002 (8.93)         32,899.9995 (22.01)    105264
+test_hexcoord_neighbor            599.9991 (11.11)          660.0604 (11.52)        236.5043 (26.07)          600.0009 (10.71)        29,400.0001 (19.67)    188680
+test_pheromone_sense              800.0006 (14.81)          952.3738 (16.61)        276.1634 (30.45)          899.9996 (16.07)        33,599.9994 (22.47)    196079
+test_pheromone_deposit          1,099.9993 (20.37)        1,384.9226 (24.16)        735.4163 (81.08)        1,200.0000 (21.43)        37,699.9997 (25.22)      6135
+test_nectar_flow_tick           4,999.9999 (92.59)        5,377.0844 (93.81)      4,915.0402 (541.86)       5,200.0014 (92.86)     1,018,299.9995 (681.14)    43669
+test_dance_start               17,899.9999 (331.48)      27,844.4197 (485.76)   768,629.6339 (>1000.0)     19,200.0007 (342.86)   79,776,700.0004 (>1000.0)   10788
+test_grid_tick                436,499.9986 (>1000.0)    460,774.0642 (>1000.0)   28,587.5785 (>1000.0)    453,599.9997 (>1000.0)     678,000.0003 (453.51)      374
+test_grid_creation          1,093,299.9994 (>1000.0)  1,295,123.2876 (>1000.0)  363,597.4228 (>1000.0)  1,219,300.0002 (>1000.0)   3,223,899.9993 (>1000.0)     146
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Legend:
+  Outliers: 1 Standard Deviation from Mean; 1.5 IQR (InterQuartile Range) from 1st Quartile and 3rd Quartile.
+  OPS: Operations Per Second, computed as 1 / Mean
+======================== 11 passed, 3 skipped in 9.52s ========================

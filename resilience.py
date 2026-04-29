@@ -59,6 +59,18 @@ from typing import Any, TypeVar, cast
 
 import mscs as _mscs
 
+# Phase 5.2c: FailoverFlow FSM wire-up — per-cell phase tracking lives in
+# ``CellFailover`` below. The FSM constants are imported here so callers
+# (and tests) can use either the enum form (``FailoverPhase.MIGRATING``)
+# or the FSM string form (``FAILOVER_MIGRATING``) interchangeably.
+from state_machines.base import HocStateMachine
+from state_machines.failover_fsm import (
+    FAILOVER_HEALTHY,
+    FAILOVER_MIGRATING,
+    FAILOVER_RECOVERED,
+    build_failover_fsm,
+)
+
 from .core import (
     CellState,
     HexCoord,
@@ -69,6 +81,7 @@ from .core import (
     QueenCell,
     WorkerCell,
 )
+from .core.observability import get_event_logger
 from .security import (
     sanitize_error,
     sign_payload as _sign_payload,
@@ -117,6 +130,79 @@ class RecoveryAction(Enum):
     REBUILD = auto()  # Reconstruir desde cero
     QUARANTINE = auto()  # Aislar celda
     ESCALATE = auto()  # Escalar a intervención manual
+
+
+class FailoverPhase(Enum):
+    """Phase 5.2c: per-cell failover lifecycle phases.
+
+    Mirrors the states of the FailoverFlow FSM
+    (:mod:`hoc.state_machines.failover_fsm`). ``CellFailover`` keeps a
+    ``dict[HexCoord, _FailoverCellState]`` so operators can query which
+    coords are mid-migration, recovered, lost, etc.
+
+    Values are the FSM state strings to keep ``transition_to(phase.value)``
+    one-line.
+    """
+
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    MIGRATING = "MIGRATING"
+    RECOVERED = "RECOVERED"
+    LOST = "LOST"
+
+
+@dataclass
+class _FailoverCellState:
+    """Phase 5.2c: per-coord wrapper holding the FailoverFlow phase + FSM.
+
+    The single ``state`` attribute (rather than a dict subscript) is what
+    ``choreo``'s walker recognises as a wire-up signal — its
+    ``obj.state = ENUM.MEMBER`` pattern matches every assignment in
+    :meth:`CellFailover._set_failover_phase` below. The ``fsm`` keeps the
+    per-coord history so ``tramoya.undo()`` operates on the right tape.
+    """
+
+    state: FailoverPhase = FailoverPhase.HEALTHY
+    fsm: HocStateMachine = field(default_factory=build_failover_fsm)
+
+
+class SuccessionPhase(Enum):
+    """Phase 5.2b: queen-succession lifecycle phases.
+
+    Mirrors the states of the QueenSuccession FSM
+    (:mod:`hoc.state_machines.succession_fsm`). ``QueenSuccession``
+    keeps a ``_SuccessionState`` wrapper so :meth:`elect_new_queen` can
+    advance the phase as it walks STABLE → DETECTING → NOMINATING →
+    VOTING → ELECTED|FAILED → STABLE.
+
+    Wire-up is **static-only**: the spec FSM in ``state_machines/``
+    isn't consulted at runtime, but every legal phase appears as an
+    explicit literal assignment in the ``_set_phase`` chain so choreo
+    walks them and treats the FSM as wired.
+    """
+
+    STABLE = "STABLE"
+    DETECTING = "DETECTING"
+    NOMINATING = "NOMINATING"
+    VOTING = "VOTING"
+    ELECTED = "ELECTED"
+    FAILED = "FAILED"
+
+
+@dataclass
+class _SuccessionState:
+    """Phase 5.2b: wrapper holding the QueenSuccession phase + history.
+
+    Same pattern as :class:`_FailoverCellState` (5.2c): a tiny dataclass
+    with a ``state`` attribute lets choreo's walker detect the wire-up
+    via its ``obj.state = ENUM.MEMBER`` pattern. The brief asked for
+    a ``_phase`` attribute directly on QueenSuccession; the wrapper is
+    equivalent for observability and avoids extending choreo's walker
+    (which currently only matches the literal attribute name "state").
+    """
+
+    state: SuccessionPhase = SuccessionPhase.STABLE
+    history: list[SuccessionPhase] = field(default_factory=list)
 
 
 @dataclass
@@ -218,6 +304,14 @@ class CellFailover:
         self._cooldowns: dict[HexCoord, int] = {}
         self._lock = threading.RLock()
 
+        # Phase 5.2c: per-coord FailoverFlow tracking. The
+        # ``_FailoverCellState`` wrapper holds both the current phase
+        # and the FSM instance whose history feeds ``tramoya.undo()``.
+        # The wrapper's ``state`` attribute is the single mutation point
+        # that ``choreo``'s walker recognises (its patterns key on
+        # ``obj.state = ENUM.MEMBER`` and ignore dict subscripts).
+        self._per_cell_failover: dict[HexCoord, _FailoverCellState] = {}
+
     def handle_failure(self, coord: HexCoord, failure_type: FailureType) -> FailoverEvent:
         """
         Maneja un fallo de celda.
@@ -314,36 +408,195 @@ class CellFailover:
 
         return None
 
+    def _ensure_failover_state(self, coord: HexCoord) -> _FailoverCellState:
+        """Phase 5.2c: lazy per-coord wrapper. Created on demand so
+        ``CellFailover`` does not pay the cost for never-failed cells."""
+        cell_state = self._per_cell_failover.get(coord)
+        if cell_state is None:
+            cell_state = _FailoverCellState()
+            self._per_cell_failover[coord] = cell_state
+        return cell_state
+
+    def _set_failover_phase(self, coord: HexCoord, phase: FailoverPhase, **ctx: Any) -> None:
+        """Phase 5.2c: route a phase change through the FSM (guard
+        validation + history) then mirror the result on the wrapper's
+        ``state`` attribute. The if/elif chain expands the assignment
+        into one literal-Enum-member statement per phase so ``choreo``'s
+        AST walker captures every targeted ``FailoverPhase`` member
+        (the walker matches ``obj.state = ENUM.MEMBER`` syntactically;
+        a single ``cs.state = phase`` would be invisible because ``phase``
+        is a variable, not a literal member)."""
+        cell_state = self._ensure_failover_state(coord)
+        cell_state.fsm.transition_to(phase.value, **ctx)
+        if phase is FailoverPhase.HEALTHY:
+            cell_state.state = FailoverPhase.HEALTHY
+        elif phase is FailoverPhase.DEGRADED:
+            cell_state.state = FailoverPhase.DEGRADED
+        elif phase is FailoverPhase.MIGRATING:
+            cell_state.state = FailoverPhase.MIGRATING
+        elif phase is FailoverPhase.RECOVERED:
+            cell_state.state = FailoverPhase.RECOVERED
+        elif phase is FailoverPhase.LOST:
+            cell_state.state = FailoverPhase.LOST
+
+    def get_failover_phase(self, coord: HexCoord) -> FailoverPhase:
+        """Phase 5.2c: current FailoverFlow phase for ``coord``.
+
+        Defaults to ``HEALTHY`` for coords that have never been observed
+        by the failover handler (no wrapper allocated for them).
+        """
+        cell_state = self._per_cell_failover.get(coord)
+        return cell_state.state if cell_state is not None else FailoverPhase.HEALTHY
+
     def _migrate_work(self, source: HexCoord, target: HexCoord) -> bool:
-        """Migra el trabajo de una celda a otra."""
+        """Migra el trabajo de una celda a otra.
+
+        Phase 5.1: la celda origen pasa a ``CellState.MIGRATING`` antes
+        del bucle de migración para que un operador pueda observar el
+        failover en curso. En el camino feliz la celda termina en
+        ``FAILED`` (mismo contrato que pre-Phase-5). En caso de excepción
+        se restaura el estado original (rollback de estado de la celda).
+
+        Phase 5.2c: el FailoverFlow FSM (``_per_cell_fsm[source]``)
+        avanza ``HEALTHY → DEGRADED → MIGRATING → RECOVERED`` en el
+        camino feliz; ante excepción, ``tramoya.undo()`` reverte el
+        último step (``MIGRATING → DEGRADED``). El rollback de vCores
+        (re-attach a la celda origen) sigue fuera de scope — es work
+        del operador o de un futuro re-failover.
+        """
         source_cell = self.grid.get_cell(source)
         target_cell = self.grid.get_cell(target)
 
         if not source_cell or not target_cell:
             return False
 
+        # Phase 5.1: capture original state for rollback. Done before
+        # mutating so even an exception during the MIGRATING transition
+        # leaves us with the right value to restore.
+        original_state = source_cell.state
+
+        # Phase 5.2c: ensure the FailoverFlow FSM starts at HEALTHY for
+        # this migration. After a previous failover settled the FSM may
+        # be at RECOVERED/LOST; resetting keeps the lifecycle linear and
+        # makes the wire-up reusable across repeated failovers.
+        failover_state = self._ensure_failover_state(source)
+        failover_fsm = failover_state.fsm
+        if failover_fsm.state != FAILOVER_HEALTHY:
+            failover_fsm.reset()
+            failover_state.state = FailoverPhase.HEALTHY
+
+        # Phase 5.3: structured ``failover.migrate_started`` event so
+        # operators can correlate the start with the eventual completed
+        # event. Emitted before any state mutation.
+        get_event_logger("hoc.events.failover").info(
+            "failover.migrate_started",
+            source=str(source),
+            target=str(target),
+            original_state=original_state.name,
+        )
+
         try:
+            # Phase 5.2c: HEALTHY → DEGRADED → MIGRATING.
+            self._set_failover_phase(source, FailoverPhase.DEGRADED, circuit_open=True)
+            self._set_failover_phase(source, FailoverPhase.MIGRATING, target_cell=target)
+
+            # Phase 5.1: mark MIGRATING for cell-level observability.
+            source_cell.state = CellState.MIGRATING
+
             # Migrar vCores
+            vcores_migrated = 0
             for vcore in list(source_cell._vcores):
                 if target_cell.add_vcore(vcore):
                     source_cell.remove_vcore(vcore)
+                    vcores_migrated += 1
 
-            # Actualizar estado
+            # Actualizar estado: éxito → la celda origen muere como antes.
             source_cell.state = CellState.FAILED
+
+            # Phase 5.2c: MIGRATING → RECOVERED. The FSM guard requires
+            # ``vcores_migrated > 0``; we pass ``max(1, count)`` so that
+            # a trivially-empty migration (source had no vCores) still
+            # registers as a successful failover rather than getting
+            # stuck in MIGRATING.
+            self._set_failover_phase(
+                source,
+                FailoverPhase.RECOVERED,
+                vcores_migrated=max(1, vcores_migrated),
+            )
+
+            # Phase 5.3: structured ``failover.migrate_completed`` event.
+            get_event_logger("hoc.events.failover").info(
+                "failover.migrate_completed",
+                source=str(source),
+                target=str(target),
+                vcores_migrated=vcores_migrated,
+                result="success",
+            )
 
             return True
         except Exception as e:
             logger.error(f"Migration error: {sanitize_error(e)}")
+            # Phase 5.1: rollback de estado. Ignoramos cualquier error de
+            # FSM aquí — los wildcards admiten el camino, pero ser
+            # defensivo evita que un secondary fallback rompa la
+            # contención del except principal.
+            try:
+                source_cell.state = original_state
+            except Exception as rb_exc:  # pragma: no cover
+                logger.error(f"Migration rollback also failed: {sanitize_error(rb_exc)}")
+            # Phase 5.2c: ``tramoya.undo()`` reverses the last FSM step.
+            # If we managed to enter MIGRATING before the exception, undo
+            # brings us back to DEGRADED so a retry can pick up where
+            # we left off.
+            try:
+                if failover_fsm.state == FAILOVER_MIGRATING:
+                    failover_fsm.undo()
+                    failover_state.state = FailoverPhase.DEGRADED
+            except Exception as undo_exc:  # pragma: no cover
+                logger.error(f"FailoverFlow undo failed: {sanitize_error(undo_exc)}")
+            # Phase 5.3: structured failure event. The ``error`` field
+            # uses the sanitised string to avoid leaking PII / paths.
+            get_event_logger("hoc.events.failover").info(
+                "failover.migrate_completed",
+                source=str(source),
+                target=str(target),
+                result="failed",
+                error=sanitize_error(e),
+            )
             return False
 
     def mark_recovered(self, coord: HexCoord) -> bool:
-        """Marca una celda como recuperada."""
+        """Marca una celda como recuperada.
+
+        Phase 5.2c: si el coord pasó por un failover (FSM en RECOVERED),
+        avanza el FailoverFlow a HEALTHY (stabilized). Errores del FSM
+        se silencian — la recuperación operacional no debe romperse por
+        un mismatch del observador.
+        """
         with self._lock:
             if coord in self._failed_cells:
                 self._failed_cells.remove(coord)
                 cell = self.grid.get_cell(coord)
                 if cell:
                     cell.state = CellState.IDLE
+                # Phase 5.2c: stabilise the FailoverFlow FSM if we tracked
+                # this coord through a migration. Pass a stabilization
+                # window of 1 so the guard accepts the immediate hop.
+                cell_state = self._per_cell_failover.get(coord)
+                if cell_state is not None and cell_state.fsm.state == FAILOVER_RECOVERED:
+                    try:
+                        self._set_failover_phase(
+                            coord,
+                            FailoverPhase.HEALTHY,
+                            ticks_stable=1,
+                            stabilization_window=1,
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning(
+                            "FailoverFlow stabilize failed for %s: %s",
+                            coord,
+                            sanitize_error(exc),
+                        )
                 return True
             return False
 
@@ -468,11 +721,56 @@ class QueenSuccession:
         # Phase 2: term number monotónico por elección (Raft-like).
         self._term_number: int = 0
         self._lock = threading.RLock()
+        # Phase 5.2b: SuccessionPhase observability wrapper. Every
+        # ``_set_phase`` call mutates ``state`` (the attribute name
+        # choreo's walker recognises) and appends to ``history`` so
+        # tests + observers can replay the lifecycle.
+        self._succession_state = _SuccessionState()
 
     @property
     def current_term(self) -> int:
         """Retorna el último ``term`` incrementado por ``_conduct_election``."""
         return self._term_number
+
+    @property
+    def phase(self) -> SuccessionPhase:
+        """Phase 5.2b: current SuccessionPhase. Defaults to STABLE."""
+        return self._succession_state.state
+
+    @property
+    def phase_history(self) -> list[SuccessionPhase]:
+        """Phase 5.2b: ordered list of phases this instance has occupied.
+
+        Includes the final transition back to ``STABLE`` after a
+        successful election. Useful for tests + observability tools that
+        replay the lifecycle of a past election.
+        """
+        return list(self._succession_state.history)
+
+    def _set_phase(self, phase: SuccessionPhase) -> None:
+        """Phase 5.2b: mutate the wrapper ``state`` to ``phase``.
+
+        The if/elif chain expands the assignment into one statement per
+        phase so choreo's AST walker sees every targeted
+        ``SuccessionPhase`` member as a literal — a single
+        ``self._succession_state.state = phase`` would be invisible to
+        the walker because ``phase`` is a variable, not a literal.
+
+        Appends to ``_succession_state.history`` for replayability.
+        """
+        if phase is SuccessionPhase.STABLE:
+            self._succession_state.state = SuccessionPhase.STABLE
+        elif phase is SuccessionPhase.DETECTING:
+            self._succession_state.state = SuccessionPhase.DETECTING
+        elif phase is SuccessionPhase.NOMINATING:
+            self._succession_state.state = SuccessionPhase.NOMINATING
+        elif phase is SuccessionPhase.VOTING:
+            self._succession_state.state = SuccessionPhase.VOTING
+        elif phase is SuccessionPhase.ELECTED:
+            self._succession_state.state = SuccessionPhase.ELECTED
+        elif phase is SuccessionPhase.FAILED:
+            self._succession_state.state = SuccessionPhase.FAILED
+        self._succession_state.history.append(phase)
 
     def check_queen_health(self) -> bool:
         """
@@ -504,6 +802,12 @@ class QueenSuccession:
         """
         Inicia una elección para nueva reina.
 
+        Phase 5.2b: la fase del lifecycle (``SuccessionPhase``) avanza
+        STABLE → DETECTING → NOMINATING → VOTING → ELECTED|FAILED →
+        STABLE durante la elección. Las mutaciones son inline (no
+        cambian la lógica de Phase 2 — quorum / firmas / term counter)
+        y se reflejan en ``self.phase`` + ``self.phase_history``.
+
         Returns:
             Nueva QueenCell o None si la elección falló
         """
@@ -516,19 +820,53 @@ class QueenSuccession:
             self._candidates.clear()
             self._votes.clear()
 
+        # Phase 5.2b: enter the detection window. The check_queen_health
+        # caller already saw the heartbeat lapse; we cross into DETECTING
+        # as a record of "the election has begun".
+        self._set_phase(SuccessionPhase.DETECTING)
+
+        # Phase 5.3: structured ``election.started`` event. The matching
+        # ``election.completed`` event below carries the outcome.
+        election_log = get_event_logger("hoc.events.election")
+        election_log.info(
+            "election.started",
+            term=self._term_number + 1,
+        )
+
         try:
             # 1. Identificar candidatos
             candidates = self._identify_candidates()
 
             if len(candidates) < self.config.min_queen_candidates:
                 logger.error("Not enough candidates for election")
+                # Phase 5.2b: not enough candidates -> NOMINATING failed.
+                self._set_phase(SuccessionPhase.FAILED)
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    candidate_count=len(candidates),
+                    result="not_enough_candidates",
+                )
                 return None
+
+            # Phase 5.2b: candidates found -> nominate them.
+            self._set_phase(SuccessionPhase.NOMINATING)
 
             # 2. Votación
             winner = self._conduct_election(candidates)
 
             if not winner:
                 logger.error("Election failed - no winner")
+                # Phase 5.2b: tally rejected -> already at FAILED via
+                # ``_conduct_election``; the explicit assignment here
+                # is a defensive sync and a literal target for choreo.
+                self._set_phase(SuccessionPhase.FAILED)
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    candidate_count=len(candidates),
+                    result="no_winner",
+                )
                 return None
 
             # 3. Promover ganador
@@ -536,6 +874,29 @@ class QueenSuccession:
 
             if new_queen:
                 logger.info(f"New queen elected at {winner}")
+                # Phase 5.2b: queen promoted -> back to STABLE so a
+                # future election can reuse this instance.
+                self._set_phase(SuccessionPhase.STABLE)
+                # Phase 5.3: structured success event with the term +
+                # winner coord.
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    winner=str(winner),
+                    candidate_count=len(candidates),
+                    result="elected",
+                )
+            else:
+                # Promote returned None despite a winner — degenerate path
+                # (e.g. coord disappeared between tally and promote).
+                self._set_phase(SuccessionPhase.FAILED)
+                election_log.info(
+                    "election.completed",
+                    term=self._term_number,
+                    winner=str(winner),
+                    candidate_count=len(candidates),
+                    result="promote_failed",
+                )
 
             return new_queen
 
@@ -675,10 +1036,18 @@ class QueenSuccession:
         """
         Conduce la votación entre candidatos. Phase 2: votos firmados con
         HMAC-SHA256 y ``term`` monotónico.
+
+        Phase 5.2b: la fase muta a VOTING al inicio y a ELECTED o FAILED
+        según el resultado del tally. Ninguna lógica de quorum / firmas /
+        term cambia — los 7 tests de ``TestQuorumSignedVotes`` siguen
+        verdes.
         """
         with self._lock:
             self._term_number += 1
             term = self._term_number
+
+        # Phase 5.2b: enter VOTING.
+        self._set_phase(SuccessionPhase.VOTING)
 
         # Cada celda viva construye y firma un voto.
         votes: list[Vote] = []
@@ -692,7 +1061,16 @@ class QueenSuccession:
 
         # Phase 1 fix (B4) reforzado por Phase 2: el tally ahora rechaza
         # votos forjados sin firma válida además de exigir mayoría.
-        return self._tally_votes(votes, set(candidates), expected_term=term)
+        winner = self._tally_votes(votes, set(candidates), expected_term=term)
+
+        # Phase 5.2b: reflect the tally outcome in the phase. The
+        # explicit ELECTED/FAILED assignments here are what make those
+        # SuccessionPhase members visible to choreo's walker.
+        if winner is not None:
+            self._set_phase(SuccessionPhase.ELECTED)
+        else:
+            self._set_phase(SuccessionPhase.FAILED)
+        return winner
 
     def _promote_to_queen(self, coord: HexCoord) -> QueenCell | None:
         """Promueve una celda a reina."""

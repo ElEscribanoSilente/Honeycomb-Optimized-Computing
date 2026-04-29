@@ -4,18 +4,29 @@ HOC Core · Grid — facade + :class:`HoneycombGrid`.
 Re-exporta geometría y config de los submódulos hermanos, y aloja la
 clase principal :class:`HoneycombGrid` más los helpers ``create_grid``
 y ``benchmark_grid``. Extraído de ``core.py`` en Fase 3.3.
+
+Phase 7.1: :meth:`HoneycombGrid.tick` is now ``async``. The
+ring-batch fan-out is implemented with ``asyncio.gather`` bounded by
+an ``asyncio.Semaphore(max_parallel_rings)`` instead of the
+pre-Phase-7 ``ThreadPoolExecutor``. Each cell's ``execute_tick`` is
+itself awaited (via ``asyncio.to_thread`` inside
+:meth:`HoneycombCell.execute_tick`) so concurrent cell processing is
+preserved without GIL contention beyond what the default thread pool
+already handles. Legacy sync callers should use
+:meth:`HoneycombGrid.run_tick_sync` (one-shot DeprecationWarning).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
+import warnings
 from collections import defaultdict
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import suppress
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -104,10 +115,13 @@ class HoneycombGrid:
     - Graceful shutdown
     """
 
+    # Phase 7.2: one-shot guard so ``run_tick_sync`` emits its
+    # DeprecationWarning only the first time it's called per process.
+    _SYNC_DEPRECATION_EMITTED: ClassVar[bool] = False
+
     __slots__ = (
         "_cells",
         "_event_bus",
-        "_executor",
         "_health_monitor",
         "_last_tick_time",
         "_metrics_collector",
@@ -128,9 +142,12 @@ class HoneycombGrid:
         self._queen: QueenCell | None = None
         self._rw_lock = RWLock()
         self._topology = GridTopology[self.config.topology.upper()]
-        self._executor = ThreadPoolExecutor(
-            max_workers=self.config.max_parallel_rings, thread_name_prefix="hoc_"
-        )
+        # Phase 7.1: ``ThreadPoolExecutor`` removed. Cell processing now
+        # fans out via ``asyncio.gather`` + ``asyncio.Semaphore`` (see
+        # :meth:`_async_parallel_tick`), and per-cell ``execute_tick``
+        # already dispatches its body to ``asyncio.to_thread``. The
+        # ``max_parallel_rings`` config knob now bounds the gather
+        # concurrency rather than executor max_workers.
         self._metrics_collector = MetricsCollector(
             max_history=self.config.metrics_history_size,
             sample_rate=self.config.metrics_sample_rate,
@@ -411,8 +428,24 @@ class HoneycombGrid:
     # TICK Y PROCESAMIENTO
     # ─────────────────────────────────────────────────────────────────────────
 
-    def tick(self) -> dict[str, Any]:
-        """Ejecuta un tick global del grid."""
+    async def tick(self) -> dict[str, Any]:
+        """Phase 7.1: async tick.
+
+        Fans out cell processing via :meth:`_async_parallel_tick`
+        (``asyncio.gather`` bounded by an
+        ``asyncio.Semaphore(max_parallel_rings)``) when
+        ``parallel_ring_processing`` is enabled, else falls back to
+        the sequential async path. Cells' ``execute_tick`` themselves
+        dispatch to threads via ``asyncio.to_thread``, so the win
+        scales with both the per-cell CPU cost and the number of
+        cells.
+
+        Side-effects (event bus publish, structured log emit,
+        auto-checkpoint write) execute *inside* the coroutine — the
+        atomic-write contract from Phase 6.4 still holds. If a
+        checkpoint write hits an awaitable down the line, this is the
+        seam to insert that.
+        """
         tick_start = time.time()
 
         self._event_bus.publish(
@@ -430,9 +463,9 @@ class HoneycombGrid:
 
         # Procesar celdas
         if self.config.parallel_ring_processing:
-            ring_results = self._parallel_tick()
+            ring_results = await self._async_parallel_tick()
         else:
-            ring_results = self._sequential_tick()
+            ring_results = await self._async_sequential_tick()
 
         results["cells_processed"] = ring_results["processed"]
         results["errors"] = ring_results["errors"]
@@ -481,34 +514,86 @@ class HoneycombGrid:
         if self._health_monitor.should_check():
             self._health_monitor.check_health()
 
+        # Phase 6.4: auto-checkpoint cada N ticks si está configurado.
+        # The atomic write inside ``checkpoint`` ensures a crash during
+        # this call leaves either the prior snapshot or no snapshot at
+        # ``checkpoint_path`` — never a torn file. We capture the
+        # checkpoint AFTER the tick counter has advanced so the
+        # snapshot reflects post-tick state (i.e. restoring will
+        # resume on the *next* tick, not redo the one we just ran).
+        interval = self.config.checkpoint_interval_ticks
+        if (
+            interval is not None
+            and self.config.checkpoint_path
+            and self._tick_count % interval == 0
+        ):
+            self._auto_checkpoint()
+
         self._event_bus.publish(Event(type=EventType.GRID_TICK_END, source=self, data=results))
 
         return results
 
-    def _parallel_tick(self) -> dict[str, int]:
-        processed = 0
-        errors = 0
+    def _auto_checkpoint(self) -> None:
+        """Phase 6.4: best-effort auto-checkpoint inside ``tick()``.
 
-        futures: list[Future] = []
+        Errors during checkpointing are logged and swallowed — a
+        failed snapshot must not abort the live tick. The caller
+        keeps running; the next interval tick gets another shot.
+        """
+        from pathlib import Path as _Path
 
+        path = _Path(self.config.checkpoint_path or "")
+        try:
+            self.checkpoint(path, compress=self.config.checkpoint_compress)
+        except Exception as exc:
+            # ``sanitize_error`` lives in security.py and respects HOC_DEBUG.
+            from ..security import sanitize_error
+
+            logger.error(
+                "auto-checkpoint to %s failed at tick %d: %s",
+                path,
+                self._tick_count,
+                sanitize_error(exc),
+            )
+
+    async def _async_parallel_tick(self) -> dict[str, int]:
+        """Phase 7.1: replaces the pre-Phase-7 ``ThreadPoolExecutor``
+        ring fan-out. Each ring becomes a coroutine; the semaphore
+        caps in-flight rings to ``max_parallel_rings`` for parity with
+        the pre-Phase-7 thread pool sizing."""
+        sem = asyncio.Semaphore(self.config.max_parallel_rings)
+
+        async def _process_ring(ring_cells: list[HoneycombCell]) -> dict[str, int]:
+            async with sem:
+                return await self._async_process_cells_batch(ring_cells)
+
+        coros: list[asyncio.Future[dict[str, int]] | asyncio.Task[dict[str, int]]] = []
         for ring_r in range(self.config.radius + 1):
             ring_cells = self.get_ring(ring_r)
             if ring_cells:
-                future = self._executor.submit(self._process_cells_batch, ring_cells)
-                futures.append(future)
+                coros.append(asyncio.ensure_future(_process_ring(ring_cells)))
 
-        for future in as_completed(futures):
-            try:
-                result = future.result(timeout=30)
-                processed += result["processed"]
-                errors += result["errors"]
-            except Exception as e:
-                logger.error(f"Ring processing error: {e}")
+        if not coros:
+            return {"processed": 0, "errors": 0}
+
+        ring_results = await asyncio.gather(*coros, return_exceptions=True)
+
+        processed = 0
+        errors = 0
+        for r in ring_results:
+            if isinstance(r, BaseException):
+                logger.error(f"Ring processing error: {r}")
                 errors += 1
+                continue
+            processed += r["processed"]
+            errors += r["errors"]
 
         return {"processed": processed, "errors": errors}
 
-    def _sequential_tick(self) -> dict[str, int]:
+    async def _async_sequential_tick(self) -> dict[str, int]:
+        """Phase 7.1: sequential async fallback. Awaits each cell's
+        ``execute_tick`` in turn — useful for deterministic ordering
+        in tests that opt out of ``parallel_ring_processing``."""
         processed = 0
         errors = 0
 
@@ -517,7 +602,7 @@ class HoneycombGrid:
 
         for cell in cells:
             try:
-                cell.execute_tick()
+                await cell.execute_tick()
                 processed += 1
             except Exception as e:
                 errors += 1
@@ -525,13 +610,18 @@ class HoneycombGrid:
 
         return {"processed": processed, "errors": errors}
 
-    def _process_cells_batch(self, cells: list[HoneycombCell]) -> dict[str, int]:
+    async def _async_process_cells_batch(self, cells: list[HoneycombCell]) -> dict[str, int]:
+        """Phase 7.1: ring-batch worker. Awaits per-cell
+        ``execute_tick`` sequentially within the batch — cells in the
+        same ring are processed in order, but rings themselves
+        parallelise via ``asyncio.gather`` in
+        :meth:`_async_parallel_tick`."""
         processed = 0
         errors = 0
 
         for cell in cells:
             try:
-                cell.execute_tick()
+                await cell.execute_tick()
                 processed += 1
             except Exception:
                 errors += 1
@@ -728,7 +818,123 @@ class HoneycombGrid:
                 cell._error_count = cell_data.get("errors", 0)
                 cell._ticks_processed = cell_data.get("ticks", 0)
                 cell._last_activity = cell_data.get("last_activity", time.time())
+                # Phase 6.3: restore FSM history if present in the
+                # checkpoint payload. Legacy v3.0 dicts (pre-Phase-6.3)
+                # didn't carry it; ``cell._state_history`` was already
+                # initialized empty by the cell's __init__, so a missing
+                # entry leaves the deque untouched.
+                history = cell_data.get("state_history")
+                if history:
+                    cell._state_history.extend(history)
 
+        return grid
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CHECKPOINTING (Phase 6.3)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def checkpoint(
+        self,
+        path: Any,
+        *,
+        compress: bool = False,
+        scheduler: Any = None,
+    ) -> None:
+        """Serialize the grid state to ``path`` as a HMAC-signed blob.
+
+        Phase 6.3: pure on-disk snapshot of the grid's logical state
+        (config + per-cell state / role / history / counters / pheromones).
+        Phase 7.10: optionally bundle a ``SwarmScheduler`` snapshot via
+        the ``scheduler`` keyword so a single blob captures both the
+        grid topology and the in-flight task queue.
+
+        Wire format and integrity guarantees live in
+        :mod:`hoc.storage.checkpoint`. The write is atomic — the blob
+        is written to ``path.tmp`` and renamed in place — so a crash
+        mid-write leaves either the previous snapshot or no snapshot,
+        never a half-written one.
+
+        Parameters
+        ----------
+        path:
+            Destination file. ``str`` or :class:`pathlib.Path`.
+        compress:
+            If ``True``, zlib-compress the mscs serialization before
+            HMAC-signing. Roughly 50–70 % size reduction on
+            grid-sized blobs at the cost of a few ms of CPU.
+        scheduler:
+            Optional ``SwarmScheduler``. When provided, its
+            :meth:`SwarmScheduler.to_dict` is embedded under the
+            ``"scheduler"`` key in the payload. Restore the scheduler
+            via :meth:`SwarmScheduler.restore_from_checkpoint`. Typed
+            as ``Any`` to avoid a hard import dependency on
+            :mod:`hoc.swarm` from this module.
+        """
+        from pathlib import Path as _Path
+
+        from ..storage.checkpoint import encode_blob
+
+        target = _Path(path)
+        payload = self.to_dict()
+        if scheduler is not None:
+            payload["scheduler"] = scheduler.to_dict()
+        blob = encode_blob(payload, compress=compress)
+
+        # Atomic write: ``write + replace`` so a crash between bytes
+        # never leaves a torn file at ``target``. ``replace`` is the
+        # cross-platform sibling of POSIX ``rename`` — atomic on
+        # both Windows (since Python 3.3) and POSIX.
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(blob)
+        tmp.replace(target)
+
+    @classmethod
+    def restore_from_checkpoint(
+        cls,
+        path: Any,
+        *,
+        event_bus: EventBus | None = None,
+    ) -> HoneycombGrid:
+        """Rebuild a grid from a checkpoint blob produced by
+        :meth:`checkpoint`.
+
+        Verification order (each failure raises a distinguishable
+        exception): blob header (``ValueError``) → outer HMAC
+        (:class:`hoc.security.MSCSecurityError`) → optional zlib
+        decompression (``ValueError``) → mscs strict-mode load
+        (re-raised verbatim).
+
+        Returns a fully-initialised :class:`HoneycombGrid` with the
+        checkpoint's tick_count, per-cell state, and FSM history
+        restored. The new grid's executor / event_bus / health monitor
+        / metrics collector are freshly constructed — they do not
+        ride the checkpoint.
+
+        Parameters
+        ----------
+        path:
+            Source file. ``str`` or :class:`pathlib.Path``.
+        event_bus:
+            Optional event bus to attach to the restored grid. When
+            ``None`` (default), the global singleton is used (matches
+            the regular constructor's behaviour).
+        """
+        from pathlib import Path as _Path
+
+        from ..storage.checkpoint import decode_blob
+
+        source = _Path(path)
+        blob = source.read_bytes()
+        payload = decode_blob(blob)
+
+        if not isinstance(payload, dict):
+            raise ValueError("checkpoint payload must be a dict")
+
+        # Reuse the legacy ``from_dict`` deserializer — it already
+        # knows how to rehydrate config + tick_count + per-cell state.
+        grid = cls.from_dict(payload)
+        if event_bus is not None:
+            grid._event_bus = event_bus
         return grid
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -744,15 +950,46 @@ class HoneycombGrid:
         logger.info("HoneycombGrid stopped")
 
     def shutdown(self) -> None:
-        """v3.0: Graceful shutdown con cleanup garantizado."""
+        """v3.0: Graceful shutdown con cleanup garantizado.
+
+        Phase 7.1: ``ThreadPoolExecutor`` removed; nothing to drain at
+        shutdown beyond the event bus. The ``asyncio.to_thread`` calls
+        used by the new async tick path return their threads to the
+        default executor, which Python tears down cleanly at process
+        exit.
+        """
         self.stop()
-        try:
-            self._executor.shutdown(wait=True, cancel_futures=True)
-        except TypeError:
-            # Python < 3.9 no tiene cancel_futures
-            self._executor.shutdown(wait=True)
         self._event_bus.shutdown()
         logger.info("HoneycombGrid shutdown complete")
+
+    def run_tick_sync(self) -> dict[str, Any]:
+        """Phase 7.2: blocking wrapper for legacy sync callers.
+
+        Equivalent to ``asyncio.run(self.tick())`` for use outside an
+        event loop — the canonical migration aid documented in the
+        Phase 7 brief. Emits :class:`DeprecationWarning` once per
+        process. Raises ``RuntimeError`` if called from inside a
+        running event loop (use ``await grid.tick()`` instead).
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "HoneycombGrid.run_tick_sync called from a running event "
+                "loop; use 'await grid.tick()' instead."
+            )
+        if not HoneycombGrid._SYNC_DEPRECATION_EMITTED:
+            warnings.warn(
+                "HoneycombGrid.run_tick_sync is a v1→v2 migration aid; "
+                "switch callers to 'await grid.tick()'. This wrapper will "
+                "be removed in HOC v3.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            HoneycombGrid._SYNC_DEPRECATION_EMITTED = True
+        return asyncio.run(self.tick())
 
     def __enter__(self) -> HoneycombGrid:
         self.start()
@@ -779,12 +1016,18 @@ def create_grid(radius: int = 10, topology: str = "flat", **kwargs) -> Honeycomb
 
 
 def benchmark_grid(grid: HoneycombGrid, ticks: int = 100) -> dict[str, float]:
-    """Ejecuta benchmark del grid."""
+    """Ejecuta benchmark del grid.
+
+    Phase 7.1: ``grid.tick`` is now async; this helper wraps each
+    invocation with ``asyncio.run`` so existing scripts can keep
+    timing the call directly. New benchmarks should call
+    ``await grid.tick()`` from an async function and time that.
+    """
     times = []
 
     for _ in range(ticks):
         start = time.perf_counter()
-        grid.tick()
+        asyncio.run(grid.tick())
         elapsed = time.perf_counter() - start
         times.append(elapsed)
 

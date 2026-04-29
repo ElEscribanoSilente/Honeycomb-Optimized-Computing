@@ -39,7 +39,7 @@ class TestHeavyByType:
         for _ in range(max_ticks):
             if scheduler.get_pending_count() == 0:
                 break
-            scheduler.tick()
+            scheduler.run_tick_sync()
         return [t for t in tasks if t.state == TaskState.COMPLETED]
 
     def test_heavy_render_only(self, scheduler):
@@ -158,7 +158,7 @@ class TestHeavyMixed:
         for _ in range(600):
             if scheduler.get_pending_count() == 0:
                 break
-            scheduler.tick()
+            scheduler.run_tick_sync()
         completed = sum(1 for t in tasks if t.state == TaskState.COMPLETED)
         assert completed == 5, f"Completadas {completed}/5"
 
@@ -208,7 +208,7 @@ class TestHeavyStress:
         for _ in range(1500):
             if scheduler.get_pending_count() == 0:
                 break
-            scheduler.tick()
+            scheduler.run_tick_sync()
         completed = sum(1 for t in tasks if t.state == TaskState.COMPLETED)
         assert completed == n, f"Completadas {completed}/{n}"
 

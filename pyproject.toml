@@ -25,6 +25,27 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.21.0",
+    # Phase 4: state-machine engine for the hoc.state_machines subpackage.
+    # See ADR-007 for the integration rationale; runtime dep because
+    # FSMs are constructed in production paths (HoneycombCell.state.setter,
+    # HiveTask transitions, QueenSuccession election, PheromoneDeposit decay,
+    # CellFailover migration). Pinned in requirements.txt for CI reproducibility.
+    # 2026-04-25 bump 1.4.0 → 1.4.1: O(n)→O(1) history pop (deque maxlen),
+    # __eq__ now compares transition graph topology, reset(clear_ctx=...) flag,
+    # better transition-tuple validation. Both fixes match HOC's analysis of
+    # tramoya 1.4.0 (the deque + __eq__ items were on our P0 list).
+    # 2026-04-25 bump 1.4.1 → 1.5.0: drop-in upgrade. Public API identical
+    # (Machine, MachineBuilder, ParallelMachine, SubMachine, WILDCARD,
+    # InvalidTransition, GuardRejected, MachineError) — only additive
+    # exports (Deque, deque, warnings). 733 tests + `choreo check` produce
+    # identical output; mermaid drift detector pass.
+    "tramoya>=1.5.0",
+    # Phase 5.3: structured logging for observability of cell state
+    # transitions, migrations, elections, and seals. JSON output in
+    # production, ConsoleRenderer in dev. ~70 KB, MIT, zero transitive
+    # deps. Pinned `>=25.0.0` in requirements.txt; ADR-011 documents
+    # the choice (structlog over loguru / OpenTelemetry).
+    "structlog>=25.0.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +53,11 @@ dev = [
     # pytest 8.4.1 / black 25.1.0 hit GHSA-6w46-j5rx-g56g / GHSA-3936-cmfr-pm3m —
     # bumped to the fix versions on 2026-04-24 after pip-audit surfaced them in CI.
     "pytest==9.0.3",
+    # Phase 7.1: pytest-asyncio for the async tick migration. Pinned
+    # to 1.3.0 — the first release that loosened its pytest constraint
+    # to ``pytest<10`` so it composes cleanly with the Phase 3 pytest
+    # 9.0.3 pin (1.1.0 had ``pytest<9`` which pip-audit rejected).
+    "pytest-asyncio==1.3.0",
     "pytest-benchmark==5.1.0",
     "pytest-cov==6.1.1",
     "pytest-mock==3.15.1",
@@ -45,6 +71,22 @@ dev = [
     "pip-audit==2.9.0",
     "radon==6.0.1",
 ]
+# Phase 7.6: optional JIT acceleration for hot paths (HexCoord.distance
+# batch calls, etc.). Numba is BSD-licensed, ~30 MB. Pure-Python
+# fallback always works — installing this extra is a perf opt-in only.
+# The full JIT bridge (``@njit(cache=True)`` on ``_axial_distance``) is
+# scaffolded for Phase 7.x followup / Phase 9; the extras_require slot
+# is reserved here so deployments can pre-install numba ahead of the
+# wire-up.
+jit = [
+    "numba>=0.59",
+]
+# Phase 7.4: opt-in Windows sandbox dependency (Job Objects via
+# pywin32). Only meaningful on Windows; the sandbox falls back to
+# SandboxNotSupported if pywin32 is missing.
+sandbox-windows = [
+    "pywin32>=306; sys_platform == 'win32'",
+]
 
 [project.urls]
 "Documentation" = "https://github.com/esraderey/Honeycomb-Optimized-Computing"
@@ -52,7 +94,23 @@ dev = [
 
 [tool.setuptools]
 package-dir = {hoc = "."}
-packages = ["hoc", "hoc.core", "hoc.metrics"]
+packages = [
+    "hoc",
+    "hoc.core",
+    "hoc.metrics",
+    "hoc.state_machines",
+    "hoc.bridge",
+    "hoc.storage",
+]
+# Phase 5.3: ``observability`` lives inside ``hoc.core`` (as
+# ``core/observability.py``), so it ships with the existing
+# ``hoc.core`` package — no separate entry needed here.
+# Phase 6.5: legacy ``bridge.py`` (886 LOC) split into ``hoc.bridge``
+# subpackage (converters / mappers / adapters), same pattern as Phase 3
+# core/metrics splits.
+# Phase 6.1: new ``hoc.storage`` subpackage hosts the StorageBackend
+# protocol + MemoryBackend default. Future phases add SQLite / LMDB /
+# S3 / Redis backends without touching the HMAC + mscs framing layer.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -64,10 +122,16 @@ python_functions = ["test_*"]
 # __init__.py as a loose module (no parent package) and fails with
 # "attempted relative import with no known parent package".
 addopts = "-v --tb=short --import-mode=importlib"
+# Phase 7.1: ``asyncio_mode = "auto"`` lets ``async def test_…`` functions
+# run inside an event loop without per-test ``@pytest.mark.asyncio``
+# decorators. Required by the new async tick migration: ``HoneycombGrid.tick``,
+# ``NectarFlow.tick``, ``SwarmScheduler.tick``, ``HoneycombCell.execute_tick``
+# all return coroutines from v2.0.0 onward.
+asyncio_mode = "auto"
 pythonpath = ["."]
 # Don't descend into these dirs during collection. Prevents pytest from
 # discovering the package source and trying to treat files there as tests.
-norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "docs", ".git", "__pycache__"]
+norecursedirs = ["snapshot", "benchmarks", ".hypothesis", ".pytest_cache", "hoc.egg-info", "core", "metrics", "state_machines", "bridge", "storage", "docs", ".git", "__pycache__"]
 
 [tool.coverage.run]
 source = ["."]
@@ -170,6 +234,14 @@ exclude = [
     "snapshot/",
     "docs/",
     "build/",
+    # Phase 7.8: ``scripts/`` hosts ad-hoc dev tools (profile_grid.py,
+    # generate_state_machines_md.py, compare_bench.py). They import the
+    # ``hoc`` package via ``sys.path`` munging at runtime, which mypy's
+    # static check can't follow. The state_machines drift detector is
+    # already type-checked separately (it has 0 errors at strict mypy
+    # under ``mypy --explicit-package-bases scripts/generate_state_machines_md.py``);
+    # the new profile_grid.py adds no new typing surface worth gating on.
+    "scripts/",
     "hoc\\.egg-info/",
     # Phase 3 legacy suppression — these files pre-date strict typing.
     # Future phases re-enable per-module by removing from exclude. See ADR-006.
@@ -181,13 +253,41 @@ exclude = [
     # metrics.py was split into the metrics/ subpackage in Phase 3.3 (cont.)
     # — the legacy suppression follows the code to its new home.
     "^metrics/",
-    "^nectar\\.py$",
-    "^swarm\\.py$",
+    # Phase 4: nectar.py and swarm.py graduated from the legacy override.
+    # They are now type-checked by `mypy .` (see ADR-006 graduation
+    # schedule). The 29 errors that surfaced were annotated inline.
+    # Phase 4: state_machines/ is type-checked separately (see CI lint
+    # workflow). Excluded here because ``mypy .`` would scan it via
+    # sys.path search AND infer the cwd-name alias (``HOC.state_machines.*``)
+    # for the same files, blocking with a "Source file found twice" error.
+    # Strict mypy is preserved by passing the files explicitly:
+    # ``python -m mypy --explicit-package-bases state_machines/*.py``.
+    # The shell glob bypasses the directory-scan exclude. See ADR-007.
+    "^state_machines/",
 ]
 
 # External untyped deps — ignore missing stubs.
 [[tool.mypy.overrides]]
-module = ["mscs", "mscs.*", "hypothesis", "hypothesis.*", "numpy.*", "radon.*"]
+module = [
+    "mscs",
+    "mscs.*",
+    "hypothesis",
+    "hypothesis.*",
+    "numpy.*",
+    "radon.*",
+    # Phase 4: tramoya ships as a single .py with no PEP 561 stubs marker.
+    # Inline annotations exist in the source but mypy can't see them when
+    # follow_imports=silent and no_site_packages=true. Treat as untyped at
+    # the boundary; our own state_machines wrapper provides the typed surface.
+    "tramoya",
+    "tramoya.*",
+    # Phase 5.3: structlog ships PEP 561 stubs but follow_imports=silent
+    # + no_site_packages=true hide them. Treat as untyped at the
+    # boundary; our own ``hoc.core.observability`` wrapper provides the
+    # typed surface for the rest of the codebase.
+    "structlog",
+    "structlog.*",
+]
 ignore_missing_imports = true
 
 # Phase 3: strict mypy is the target, but core.py, metrics.py, bridge.py,
@@ -206,20 +306,44 @@ module = [
     "metrics",
     "metrics.*",
     "bridge",
-    "nectar",
-    "swarm",
+    "bridge.*",
     "hoc.core",
     "hoc.core.*",
     "hoc.metrics",
     "hoc.metrics.*",
     "hoc.bridge",
-    "hoc.nectar",
-    "hoc.swarm",
+    "hoc.bridge.*",
 ]
 # Full suppression for legacy modules during Phase 3. Future phases tighten
 # per-module by removing entries from this list (and then fixing the resulting
 # errors inline). See ADR-006.
+#
+# Phase 4 graduation: swarm and nectar were removed from this list. The
+# resulting 29 mypy errors (11 in swarm.py, 18 in nectar.py) are annotated
+# inline in those files.
 ignore_errors = true
+
+# Phase 4: state_machines/ is reachable as both ``state_machines.*`` (the
+# top-level alias used by tests and core/cells_base.py absolute import) and
+# ``HOC.state_machines.*`` (the package name mypy infers from the cwd
+# directory ``D:\HOC``). The same physical .py files satisfy both names, and
+# mypy reports "Source file found twice under different module names" if
+# both are scanned. Suppress the cwd-name alias so only the canonical
+# ``state_machines.*`` view is type-checked. The wrapper itself remains
+# strict-mypy via ``mypy state_machines/`` invoked directly in CI.
+[[tool.mypy.overrides]]
+module = ["HOC.state_machines", "HOC.state_machines.*"]
+ignore_errors = true
+
+# Phase 6.5: same cwd-name aliasing applies to the new ``hoc.bridge`` subpackage
+# (split from legacy ``bridge.py``). When mypy scans ``D:\HOC`` as cwd it
+# reaches the files via the ``HOC.bridge.*`` alias too. Mirror the legacy
+# ``bridge`` override (``ignore_errors``) so the split inherits the same
+# Phase 3 ADR-006 relaxation rather than re-introducing 8 strict errors.
+[[tool.mypy.overrides]]
+module = ["HOC.bridge", "HOC.bridge.*"]
+ignore_errors = true
+
 
 # ─── Bandit (config here for completeness; CLI call in CI uses these) ─────────
 [tool.bandit]
